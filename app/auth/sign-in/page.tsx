@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, Suspense, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "../../../components/AuthContext";
 import { XchangeLogo } from "../../../components/XchangeLogo";
@@ -9,8 +9,7 @@ import { XchangeLogo } from "../../../components/XchangeLogo";
 function SignInForm() {
   const { signIn } = useAuth();
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const from = searchParams.get("from") || "/profile";
+  const redirectTo = "/feed";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -23,7 +22,7 @@ function SignInForm() {
     setLoading(true);
     try {
       await signIn({ email, password });
-      router.push(from);
+      router.push(redirectTo);
     } catch (err) {
       if (err instanceof Error) setError(err.message);
       else setError("Unable to sign in. Please try again.");

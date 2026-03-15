@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { XchangeLogoImage } from "./XchangeLogoImage";
+import { useAuth } from "./AuthContext";
 
 const FOOTER_BG = "#080B14";
 const FOOTER_TEXT = "#6B7280";
@@ -34,8 +35,8 @@ const RESOURCES_LINKS = [
   { label: "Idle", href: "/idle" },
 ];
 
-const COMPANY_LINKS = [
-  { label: "About Xchange (coming soon)", href: "#" },
+const COMPANY_LINKS_BASE = [
+  { label: "About Xchange", href: "/about" },
   { label: "Our Mission", href: "/mission" },
   { label: "Careers (coming soon)", href: "#" },
   { label: "Press (coming soon)", href: "#" },
@@ -67,8 +68,13 @@ function FooterColumn({ title, links }: { title: string; links: { label: string;
 }
 
 export function SiteFooter() {
+  const { user } = useAuth();
   const [apiStatus, setApiStatus] = useState<"ok" | "delayed" | "error" | null>(null);
   const [apiLabel, setApiLabel] = useState<string>("");
+  const companyLinks = useMemo(
+    () => [{ label: "Home", href: user ? "/feed" : "/" }, ...COMPANY_LINKS_BASE],
+    [user]
+  );
 
   useEffect(() => {
     fetch("/api/status", { cache: "no-store" })
@@ -145,7 +151,7 @@ export function SiteFooter() {
 
           <FooterColumn title="Platform" links={PLATFORM_LINKS} />
           <FooterColumn title="Resources" links={RESOURCES_LINKS} />
-          <FooterColumn title="Company" links={COMPANY_LINKS} />
+          <FooterColumn title="Company" links={companyLinks} />
         </div>
 
         {/* Bottom bar */}

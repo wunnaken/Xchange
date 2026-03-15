@@ -8,9 +8,12 @@ import {
   type WatchlistItem,
 } from "../../lib/watchlist-api";
 
+type Quote = { price: number; changePercent: number };
+
 export default function WatchlistPage() {
   const [items, setItems] = useState<WatchlistItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [quotes, setQuotes] = useState<Record<string, Quote>>({});
 
   const refresh = useCallback(async () => {
     try {
@@ -26,6 +29,26 @@ export default function WatchlistPage() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  const tickerList = items.map((i) => i.ticker).sort().join(",");
+  useEffect(() => {
+    if (items.length === 0) return;
+    let cancelled = false;
+    const next: Record<string, Quote> = {};
+    Promise.all(
+      items.map((item) =>
+        fetch(`/api/ticker-quote?ticker=${encodeURIComponent(item.ticker)}`, { cache: "no-store" })
+          .then((r) => r.json())
+          .then((d) => {
+            if (!cancelled && d?.price != null) next[item.ticker] = { price: d.price, changePercent: d.changePercent ?? 0 };
+          })
+          .catch(() => {})
+      )
+    ).then(() => {
+      if (!cancelled) setQuotes((prev) => ({ ...prev, ...next }));
+    });
+    return () => { cancelled = true; };
+  }, [tickerList, items.length]);
 
   const handleRemove = async (ticker: string, e: React.MouseEvent) => {
     e.preventDefault();
@@ -56,27 +79,40 @@ export default function WatchlistPage() {
         </p>
       ) : (
         <ul className="mt-4 space-y-2">
-          {items.map((item) => (
-            <li key={item.ticker}>
-              <div className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-white/5 px-4 py-3 transition-colors hover:border-white/15">
-                <Link
-                  href={`/search/${encodeURIComponent(item.ticker)}`}
-                  className="min-w-0 flex-1 flex items-center justify-between gap-2"
-                >
-                  <span className="font-medium text-zinc-200">{item.ticker}</span>
-                  <span className="text-sm text-zinc-500">—</span>
-                </Link>
-                <button
-                  type="button"
-                  onClick={(e) => handleRemove(item.ticker, e)}
-                  className="shrink-0 rounded px-2.5 py-1.5 text-xs font-medium text-zinc-400 transition-colors hover:bg-red-500/10 hover:text-red-400"
-                  aria-label={`Remove ${item.ticker} from watchlist`}
-                >
-                  Remove
-                </button>
-              </div>
-            </li>
-          ))}
+          {items.map((item) => {
+            const q = quotes[item.ticker];
+            const priceStr = q?.price != null ? (q.price >= 1 ? `$${q.price.toFixed(2)}` : `$${q.price.toFixed(4)}`) : null;
+            const ch = q?.changePercent;
+            return (
+              <li key={item.ticker}>
+                <div className="flex items-center justify-between gap-3 rounded-lg bg-white/5 px-4 py-3 transition-colors hover:bg-white/10">
+                  <Link
+                    href={`/search/${encodeURIComponent(item.ticker)}`}
+                    className="min-w-0 flex-1 flex items-center justify-between gap-3"
+                  >
+                    <span className="font-medium text-zinc-200">{item.ticker}</span>
+                    <div className="flex shrink-0 items-center gap-4 text-sm">
+                      {priceStr && <span className="text-zinc-400">{priceStr}</span>}
+                      {ch != null && (
+                        <span className={ch >= 0 ? "text-emerald-400" : "text-red-400"}>
+                          {ch >= 0 ? "+" : ""}{ch.toFixed(2)}%
+                        </span>
+                      )}
+                      {!priceStr && ch == null && <span className="text-zinc-500">—</span>}
+                    </div>
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={(e) => handleRemove(item.ticker, e)}
+                    className="shrink-0 rounded px-2.5 py-1.5 text-xs font-medium text-zinc-400 transition-colors hover:bg-red-500/10 hover:text-red-400"
+                    aria-label={`Remove ${item.ticker} from watchlist`}
+                  >
+                    Remove
+                  </button>
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>

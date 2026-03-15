@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { XchangeLogoImage } from "./XchangeLogoImage";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "./AuthContext";
@@ -22,11 +22,12 @@ const MAIN_NAV: { href: string; label: string }[] = [
   { href: "/messages", label: "Messages" },
   { href: "/news", label: "News" },
   { href: "/map", label: "Map" },
-  { href: "/profiles", label: "Growth" },
+  { href: "/growth", label: "Growth" },
+  { href: "/ceos", label: "CEOs" },
   { href: "/calendar", label: "Calendar" },
   { href: "/journal", label: "Journal" },
   { href: "/watchlist", label: "My Watchlist" },
-  { href: "/ai", label: "AI Assistant" },
+  { href: "/ai", label: "Workspace" },
 ];
 
 const MAIN_NAV_HREFS = MAIN_NAV.map((i) => i.href);
@@ -156,6 +157,7 @@ function NavItem({
 export function Layout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { user, signOut } = useAuth();
+  const router = useRouter();
   const { theme, setTheme } = useTheme();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -165,17 +167,18 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const notificationsRef = useRef<HTMLDivElement>(null);
   const hiddenPanelRef = useRef<HTMLDivElement>(null);
 
-  const [collapsed, setCollapsed] = useState(false);
   const [customizeMode, setCustomizeMode] = useState(false);
   const [prefs, setPrefs] = useState<SidebarPrefs>(() => ({
     order: [...MAIN_NAV_HREFS],
     hidden: [],
+    collapsed: false,
   }));
+  const [windowWidth, setWindowWidth] = useState(1024);
 
   useLoginStreakTick();
 
   useEffect(() => {
-    const onResize = () => setCollapsed(window.innerWidth < 1024);
+    const onResize = () => setWindowWidth(typeof window !== "undefined" ? window.innerWidth : 1024);
     onResize();
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
@@ -250,14 +253,22 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   const isActive = useCallback(
     (href: string) => {
-      if (href === "/feed") return pathname === "/feed" || pathname.startsWith("/feed");
+      if (href === "/feed") return pathname === "/feed";
       return pathname === href || pathname.startsWith(href + "/");
     },
     [pathname]
   );
 
+  const isNarrowScreen = windowWidth < 1024;
+  const collapsed = isNarrowScreen || prefs.collapsed;
   const sidebarWidth = collapsed ? (sidebarOpen ? SIDEBAR_WIDTH : 72) : SIDEBAR_WIDTH;
   const narrow = collapsed && !sidebarOpen;
+
+  const toggleSidebarCollapsed = useCallback(() => {
+    const next = { ...prefs, collapsed: !prefs.collapsed };
+    setPrefs(next);
+    saveSidebarPrefs(next);
+  }, [prefs]);
 
   return (
     <div className="min-h-screen app-page font-[&quot;Times_New_Roman&quot;,serif]" style={{ paddingLeft: sidebarWidth }}>
@@ -338,13 +349,30 @@ export function Layout({ children }: { children: React.ReactNode }) {
             );
           })}
           <div className={`mt-1 flex flex-col gap-0.5 ${collapsed ? "items-center" : ""}`}>
-            <button
-              type="button"
-              onClick={() => setCustomizeMode((m) => !m)}
-              className="rounded-lg px-3 py-2 text-left text-xs font-medium text-zinc-500 transition-colors hover:bg-white/5 hover:text-zinc-400"
-            >
-              {customizeMode ? (collapsed ? "✓" : "Done") : (collapsed ? "⋯" : "Customize sidebar")}
-            </button>
+            <div className="flex items-center gap-0.5">
+              <button
+                type="button"
+                onClick={() => setCustomizeMode((m) => !m)}
+                className="min-w-0 flex-1 rounded-lg px-3 py-2 text-left text-xs font-medium text-zinc-500 transition-colors hover:bg-white/5 hover:text-zinc-400"
+              >
+                {customizeMode ? (collapsed ? "✓" : "Done") : (collapsed ? "⋯" : "Customize sidebar")}
+              </button>
+              {!isNarrowScreen && (
+                <button
+                  type="button"
+                  onClick={toggleSidebarCollapsed}
+                  className="shrink-0 rounded p-2 text-zinc-500 transition-colors hover:bg-white/5 hover:text-[var(--accent-color)]"
+                  title={prefs.collapsed ? "Expand sidebar" : "Collapse sidebar"}
+                  aria-label={prefs.collapsed ? "Expand sidebar" : "Collapse sidebar"}
+                >
+                  {prefs.collapsed ? (
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" /></svg>
+                  ) : (
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7M18 19l-7-7 7-7" /></svg>
+                  )}
+                </button>
+              )}
+            </div>
             {prefs.hidden.length > 0 && (
               <div className="relative" ref={hiddenPanelRef}>
                 <button
@@ -585,6 +613,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                       onClick={() => {
                         setProfileOpen(false);
                         signOut();
+                        router.push("/");
                       }}
                       className="group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-zinc-400 transition-colors duration-200 hover:bg-white/5 hover:text-red-400"
                       role="menuitem"
@@ -612,8 +641,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
-      <main className="min-h-[calc(100vh-3.5rem)]">{children}</main>
-      <SiteFooter />
+      <main className={pathname === "/ceos" ? "h-[calc(100vh-3.5rem)] min-h-0 overflow-hidden" : "min-h-[calc(100vh-3.5rem)]"}>{children}</main>
+      {pathname !== "/ceos" && <SiteFooter />}
     </div>
   );
 }

@@ -86,6 +86,7 @@ export default function FeedPage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [watchlistLoading, setWatchlistLoading] = useState(true);
+  const [watchlistQuotes, setWatchlistQuotes] = useState<Record<string, { price: number; changePercent: number }>>({});
   type FollowedProfile = { id: string; name: string; username: string };
   const [followedProfiles, setFollowedProfiles] = useState<FollowedProfile[]>([]);
   const [showBriefing, setShowBriefing] = useState(false);
@@ -202,13 +203,6 @@ export default function FeedPage() {
   }, [refreshing]);
 
   useEffect(() => {
-    if (newPostsCount > 0 && showNewPostsBanner) {
-      document.title = `(${newPostsCount}) Xchange — Feed`;
-    }
-    return () => { document.title = "Xchange"; };
-  }, [newPostsCount, showNewPostsBanner]);
-
-  useEffect(() => {
     let cancelled = false;
     setPostsLoading(true);
     fetch("/api/posts?limit=20&offset=0", { credentials: "include" })
@@ -281,6 +275,26 @@ export default function FeedPage() {
       cancelled = true;
     };
   }, [pathname]);
+
+  const watchlistTickers = watchlist.map((i) => i.ticker).sort().join(",");
+  useEffect(() => {
+    if (watchlist.length === 0) return;
+    let cancelled = false;
+    const quotes: Record<string, { price: number; changePercent: number }> = {};
+    Promise.all(
+      watchlist.slice(0, 15).map((item) =>
+        fetch(`/api/ticker-quote?ticker=${encodeURIComponent(item.ticker)}`, { cache: "no-store" })
+          .then((r) => r.json())
+          .then((d) => {
+            if (!cancelled && d?.price != null) quotes[item.ticker] = { price: d.price, changePercent: d.changePercent ?? 0 };
+          })
+          .catch(() => {})
+      )
+    ).then(() => {
+      if (!cancelled) setWatchlistQuotes((prev) => ({ ...prev, ...quotes }));
+    });
+    return () => { cancelled = true; };
+  }, [watchlistTickers, watchlist.length]);
 
   const handleReaction = async (postId: string, key: ReactionKey) => {
     const alreadyReacted = userReactions[postId]?.[key];
@@ -667,41 +681,6 @@ export default function FeedPage() {
         {/* Right sidebar */}
         <aside className="hidden w-80 flex-shrink-0 border-l border-white/5 lg:block">
           <div className="sticky top-0 space-y-6 p-4">
-            {/* People You Follow */}
-            <section
-              className="rounded-2xl border border-white/10 p-4 transition-colors duration-200"
-              style={{ backgroundColor: CARD_BG_VAR }}
-            >
-              <h2 className="text-sm font-semibold text-zinc-100">People You Follow</h2>
-              {followedProfiles.length === 0 ? (
-                <p className="mt-3 text-xs text-zinc-500">
-                  <Link href="/people" className="text-[var(--accent-color)] hover:underline">Find people</Link> to follow.
-                </p>
-              ) : (
-                <div className="mt-3 flex flex-wrap gap-3">
-                  {followedProfiles.map((p) => (
-                    <Link
-                      key={p.id}
-                      href={`/messages?with=${p.username}`}
-                      className="relative flex flex-col items-center gap-1"
-                      title={`Message @${p.username}`}
-                    >
-                      <div className="relative">
-                        <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-xs font-semibold text-[var(--accent-color)]">
-                          {getSuggestedInitials(p.name)}
-                        </span>
-                        <span
-                          className={`absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 ${isOnlineStable(p.username) ? "border-[#0F1520] bg-[var(--accent-color)]" : "border-[#0F1520] bg-zinc-500"}`}
-                          title={isOnlineStable(p.username) ? "Online" : "Offline"}
-                        />
-                      </div>
-                      <span className="max-w-[72px] truncate text-xs text-zinc-400">@{p.username}</span>
-                    </Link>
-                  ))}
-                </div>
-              )}
-            </section>
-
             {/* Your Watchlist */}
             <section
               className="rounded-2xl border border-white/10 p-4 transition-colors duration-200"
@@ -716,25 +695,30 @@ export default function FeedPage() {
                 </p>
               ) : (
                 <ul className="mt-3 space-y-2">
-                  {watchlist.map((item) => (
-                    <li key={item.ticker}>
-                      <Link
-                        href={`/search/${encodeURIComponent(item.ticker)}`}
-                        className="flex items-center justify-between rounded-lg px-3 py-2 transition-colors duration-200 hover:bg-white/5"
-                      >
-                        <span className="font-medium text-zinc-200">{item.ticker}</span>
-                        <span className="text-xs text-zinc-500">
-                          {item.price ?? "—"}
-                          {item.change != null && (
-                            <span className={item.change >= 0 ? "text-emerald-400" : "text-red-400"}>
-                              {" "}
-                              {item.change >= 0 ? "+" : ""}{item.change}%
-                            </span>
-                          )}
-                        </span>
-                      </Link>
-                    </li>
-                  ))}
+                  {watchlist.map((item) => {
+                    const q = watchlistQuotes[item.ticker];
+                    const price = item.price ?? (q?.price != null ? (q.price >= 1 ? q.price.toFixed(2) : q.price.toFixed(4)) : null);
+                    const ch = item.change ?? q?.changePercent;
+                    return (
+                      <li key={item.ticker}>
+                        <Link
+                          href={`/search/${encodeURIComponent(item.ticker)}`}
+                          className="flex items-center justify-between gap-2 rounded-lg px-3 py-2 transition-colors duration-200 hover:bg-white/5"
+                        >
+                          <span className="font-medium text-zinc-200">{item.ticker}</span>
+                          <span className="shrink-0 text-right text-xs">
+                            {price != null && <span className="text-zinc-400">${price}</span>}
+                            {ch != null && (
+                              <span className={ch >= 0 ? "ml-1.5 text-emerald-400" : "ml-1.5 text-red-400"}>
+                                {ch >= 0 ? "+" : ""}{typeof ch === "number" ? ch.toFixed(2) : ch}%
+                              </span>
+                            )}
+                            {price == null && ch == null && <span className="text-zinc-500">—</span>}
+                          </span>
+                        </Link>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </section>
@@ -839,37 +823,6 @@ export default function FeedPage() {
             className="rounded-2xl border border-white/10 p-4"
             style={{ backgroundColor: CARD_BG_VAR }}
           >
-            <h2 className="text-sm font-semibold text-zinc-100">People You Follow</h2>
-            {followedProfiles.length === 0 ? (
-              <p className="mt-3 text-xs text-zinc-500">
-                <Link href="/people" className="text-[var(--accent-color)] hover:underline">Find people</Link> to follow.
-              </p>
-            ) : (
-              <div className="mt-3 flex flex-wrap gap-3">
-                {followedProfiles.map((p) => (
-                  <Link
-                    key={p.id}
-                    href={`/messages?with=${p.username}`}
-                    className="relative flex flex-col items-center gap-1"
-                  >
-                    <div className="relative">
-                      <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-xs font-semibold text-[var(--accent-color)]">
-                        {getSuggestedInitials(p.name)}
-                      </span>
-                      <span
-                        className={`absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 ${isOnlineStable(p.username) ? "border-[var(--app-card)] bg-[var(--accent-color)]" : "border-[var(--app-card)] bg-zinc-500"}`}
-                      />
-                    </div>
-                    <span className="max-w-[72px] truncate text-xs text-zinc-400">@{p.username}</span>
-                  </Link>
-                ))}
-              </div>
-            )}
-          </section>
-          <section
-            className="rounded-2xl border border-white/10 p-4"
-            style={{ backgroundColor: CARD_BG_VAR }}
-          >
             <h2 className="text-sm font-semibold text-zinc-100">Your Watchlist</h2>
             {watchlistLoading ? (
               <p className="mt-3 text-xs text-zinc-500">Loading…</p>
@@ -879,25 +832,30 @@ export default function FeedPage() {
               </p>
             ) : (
               <ul className="mt-3 space-y-2">
-                {watchlist.map((item) => (
-                  <li key={item.ticker}>
-                    <Link
-                      href={`/search/${encodeURIComponent(item.ticker)}`}
-                      className="flex justify-between rounded-lg px-3 py-2"
-                    >
-                      <span className="font-medium text-zinc-200">{item.ticker}</span>
-                      <span className="text-xs text-zinc-500">
-                        {item.price ?? "—"}
-                        {item.change != null && (
-                          <span className={item.change >= 0 ? "text-emerald-400" : "text-red-400"}>
-                            {" "}
-                            {item.change >= 0 ? "+" : ""}{item.change}%
-                          </span>
-                        )}
-                      </span>
-                    </Link>
-                  </li>
-                ))}
+                {watchlist.map((item) => {
+                  const q = watchlistQuotes[item.ticker];
+                  const price = item.price ?? (q?.price != null ? (q.price >= 1 ? q.price.toFixed(2) : q.price.toFixed(4)) : null);
+                  const ch = item.change ?? q?.changePercent;
+                  return (
+                    <li key={item.ticker}>
+                      <Link
+                        href={`/search/${encodeURIComponent(item.ticker)}`}
+                        className="flex justify-between gap-2 rounded-lg px-3 py-2"
+                      >
+                        <span className="font-medium text-zinc-200">{item.ticker}</span>
+                        <span className="shrink-0 text-right text-xs">
+                          {price != null && <span className="text-zinc-400">${price}</span>}
+                          {ch != null && (
+                            <span className={ch >= 0 ? "ml-1.5 text-emerald-400" : "ml-1.5 text-red-400"}>
+                              {ch >= 0 ? "+" : ""}{typeof ch === "number" ? ch.toFixed(2) : ch}%
+                            </span>
+                          )}
+                          {price == null && ch == null && <span className="text-zinc-500">—</span>}
+                        </span>
+                      </Link>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </section>

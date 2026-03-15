@@ -10,8 +10,23 @@ import {
   isTickerInWatchlist,
   removeFromWatchlistApi,
 } from "../../../lib/watchlist-api";
+import { useToast } from "../../../components/ToastContext";
+import { CandlestickChart } from "../../../components/CandlestickChart";
 
 const CARD_BG = "#0F1520";
+
+type ChartPoint = {
+  time: number;
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+};
+
+const CHART_RANGES = ["10m", "1H", "1D", "1W", "1M"] as const;
+type ChartRangeKey = "10m" | "1h" | "1d" | "1w" | "1m";
 
 function seededRandom(seed: string): number {
   let h = 0;
@@ -49,6 +64,10 @@ function TickerDataPanel({
   watchingCount,
   quote,
   quoteLoading,
+  chartData,
+  chartLoading,
+  chartRange,
+  onChartRangeChange,
 }: {
   ticker: string;
   inWatchlist: boolean;
@@ -56,15 +75,24 @@ function TickerDataPanel({
   watchingCount: number;
   quote: QuoteData | null;
   quoteLoading: boolean;
+  chartData: ChartPoint[];
+  chartLoading: boolean;
+  chartRange: ChartRangeKey;
+  onChartRangeChange: (r: ChartRangeKey) => void;
 }) {
   const name = ticker.length <= 4 ? `${ticker}` : ticker;
   const price = quote?.price;
   const changePercent = quote?.changePercent ?? null;
-  const volume = quote?.volume;
+  const volumeFromQuote = quote?.volume;
+  const volumeFromChart = chartData.length > 0
+    ? chartData[chartData.length - 1]?.volume ?? chartData.reduce((s, d) => s + d.volume, 0)
+    : null;
+  const volume = volumeFromQuote ?? (volumeFromChart != null && volumeFromChart > 0 ? volumeFromChart : null);
   const high = quote?.high;
   const low = quote?.low;
   const hasPrice = price != null && !Number.isNaN(price);
   const hasChange = changePercent != null && !Number.isNaN(changePercent);
+  const hasVolume = chartData.length > 0 && chartData.some((d) => d.volume > 0);
   return (
     <div className="space-y-6">
       <div>
@@ -89,11 +117,49 @@ function TickerDataPanel({
           )}
         </div>
       )}
-      <div
-        className="flex h-48 items-center justify-center rounded-xl border border-white/10"
-        style={{ backgroundColor: CARD_BG }}
-      >
-        <p className="text-sm text-zinc-500">Live chart coming soon</p>
+      <div className="space-y-2">
+        <div className="flex flex-wrap gap-1">
+          {CHART_RANGES.map((label) => {
+            const value = (label === "1H" ? "1h" : label === "1D" ? "1d" : label === "1W" ? "1w" : label === "1M" ? "1m" : "10m") as ChartRangeKey;
+            const active = chartRange === value;
+            return (
+              <button
+                key={label}
+                type="button"
+                onClick={() => onChartRangeChange(value)}
+                className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                  active ? "bg-white/15 text-zinc-100" : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
+                }`}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        <div
+          className="flex w-full items-center justify-center overflow-hidden rounded-xl border border-white/10"
+          style={{ backgroundColor: CARD_BG }}
+        >
+          {chartLoading ? (
+            <div className="flex h-56 w-full items-center justify-center">
+              <p className="text-sm text-zinc-500">Loading chart…</p>
+            </div>
+          ) : chartData.length > 0 ? (
+            <CandlestickChart
+              data={chartData}
+              showVolume={hasVolume}
+              height={280}
+              className="w-full rounded-xl"
+            />
+          ) : (
+            <div className="flex h-56 w-full items-center justify-center">
+              <p className="text-sm text-zinc-500">Chart data unavailable</p>
+            </div>
+          )}
+        </div>
+        {chartData.length > 0 && !hasVolume && (
+          <p className="text-[10px] text-zinc-500">Volume not available for this range</p>
+        )}
       </div>
       <dl className="grid grid-cols-2 gap-3 sm:grid-cols-1">
         {[
@@ -260,6 +326,9 @@ export default function TickerPage() {
   const [error, setError] = useState<string | null>(null);
   const [quote, setQuote] = useState<QuoteData | null>(null);
   const [quoteLoading, setQuoteLoading] = useState(true);
+  const [chartData, setChartData] = useState<ChartPoint[]>([]);
+  const [chartLoading, setChartLoading] = useState(true);
+  const [chartRange, setChartRange] = useState<ChartRangeKey>("1d");
   const watchingCount = useWatchingCount(ticker || "");
 
   const refreshWatchlist = useCallback(async () => {
@@ -296,6 +365,18 @@ export default function TickerPage() {
 
   useEffect(() => {
     if (!ticker) return;
+    setChartLoading(true);
+    fetch(`/api/ticker-chart?ticker=${encodeURIComponent(ticker)}&range=${chartRange}`, { cache: "no-store" })
+      .then((res) => res.json())
+      .then((data) => {
+        setChartData(Array.isArray(data?.data) ? data.data : []);
+      })
+      .catch(() => setChartData([]))
+      .finally(() => setChartLoading(false));
+  }, [ticker, chartRange]);
+
+  useEffect(() => {
+    if (!ticker) return;
     const cached = getCachedAnalysis(ticker);
     if (cached) {
       setAnalysis(cached);
@@ -318,16 +399,19 @@ export default function TickerPage() {
       .finally(() => setLoading(false));
   }, [ticker]);
 
+  const toast = useToast();
   const handleWatchlistToggle = async () => {
     try {
       if (inWatchlist) {
         await removeFromWatchlistApi(ticker);
+        toast.showToast("Removed from watchlist", "success");
       } else {
         await addToWatchlistApi({ ticker, name: ticker });
+        toast.showToast("Added to watchlist", "success");
       }
       await refreshWatchlist();
     } catch {
-      // ignore
+      toast.showToast("Could not update watchlist", "warning");
     }
   };
 
@@ -368,6 +452,10 @@ export default function TickerPage() {
               watchingCount={watchingCount}
               quote={quote}
               quoteLoading={quoteLoading}
+              chartData={chartData}
+              chartLoading={chartLoading}
+              chartRange={chartRange}
+              onChartRangeChange={setChartRange}
             />
           </div>
 

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { getInitials } from "../../lib/suggested-people";
 import { SAMPLE_DMS, SAMPLE_GROUPS, type Message } from "../../lib/messages-data";
 
@@ -26,7 +26,7 @@ const TYPING_REPLY_MSG: Record<string, string> = {
   priya_etf: "Thanks, will take a look!",
 };
 
-export default function MessagesPage() {
+function MessagesContent() {
   const searchParams = useSearchParams();
   const withHandle = searchParams.get("with");
   const [activeTab, setActiveTab] = useState<"dms" | "groups">("dms");
@@ -348,5 +348,13 @@ export default function MessagesPage() {
         )}
       </main>
     </div>
+  );
+}
+
+export default function MessagesPage() {
+  return (
+    <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-[#0A0E1A]"><div className="h-8 w-8 animate-pulse rounded-full bg-white/10" /></div>}>
+      <MessagesContent />
+    </Suspense>
   );
 }

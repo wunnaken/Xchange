@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { getInitials } from "../../lib/suggested-people";
 
 const RISK_STYLES: Record<string, string> = {
@@ -92,7 +92,7 @@ async function fetchFollowed(): Promise<string[]> {
   return Array.isArray(data.followedIds) ? data.followedIds : [];
 }
 
-export default function PeoplePage() {
+function PeopleContent() {
   const searchParams = useSearchParams();
   const qFromUrl = searchParams.get("q") ?? "";
   const [query, setQuery] = useState(qFromUrl);
@@ -191,5 +191,13 @@ export default function PeoplePage() {
         </>
       )}
     </div>
+  );
+}
+
+export default function PeoplePage() {
+  return (
+    <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-[#0A0E1A]"><div className="h-8 w-8 animate-pulse rounded-full bg-white/10" /></div>}>
+      <PeopleContent />
+    </Suspense>
   );
 }

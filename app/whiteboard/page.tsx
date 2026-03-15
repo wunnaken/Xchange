@@ -97,23 +97,42 @@ function BoardListItem({
   };
 
   return (
-    <div className="group flex items-center gap-1 rounded py-1">
+    <div
+      className="group flex items-center gap-1 rounded py-1"
+      role="button"
+      tabIndex={0}
+      onClick={() => {
+        if (!isEditing && !isCurrent) onSelect();
+      }}
+      onKeyDown={(e) => {
+        if (!isEditing && !isCurrent && (e.key === "Enter" || e.key === " ")) {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+    >
       {isEditing ? (
         <input
           type="text"
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onBlur={commitRename}
-          onKeyDown={(e) => e.key === "Enter" && commitRename()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commitRename();
+            e.stopPropagation();
+          }}
+          onClick={(e) => e.stopPropagation()}
           className="min-w-0 flex-1 rounded border border-white/20 bg-white/5 px-1.5 py-0.5 text-xs text-zinc-100 outline-none focus:border-[var(--accent-color)]"
           autoFocus
         />
       ) : (
         <button
           type="button"
-          onClick={isCurrent ? undefined : onSelect}
-          onDoubleClick={startEdit}
-          title="Double-click to rename"
+          onClick={(e) => {
+            e.stopPropagation();
+            startEdit();
+          }}
+          title="Click to rename"
           className={`min-w-0 flex-1 truncate text-left text-sm hover:text-white ${isCurrent ? "cursor-default font-medium text-[var(--accent-color)]" : "text-zinc-400"}`}
         >
           {board.name}
@@ -122,7 +141,10 @@ function BoardListItem({
       {!isEditing && (
         <button
           type="button"
-          onClick={onDelete}
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
           className="shrink-0 rounded p-1 text-zinc-500 opacity-0 hover:bg-white/5 hover:text-red-400 group-hover:opacity-100"
           aria-label="Delete board"
         >
@@ -445,19 +467,6 @@ export default function WhiteboardPage() {
         <div className="min-w-0 flex-1" />
 
         <div className="flex shrink-0 items-center gap-1">
-          <button
-            type="button"
-            onClick={() => setBoardsPanelOpen(true)}
-            className={`rounded px-2.5 py-1.5 text-xs font-medium transition ${boardsPanelOpen ? "bg-white/10 text-zinc-100" : "text-zinc-400 hover:bg-white/5 hover:text-[var(--accent-color)]"}`}
-            title={boardsPanelOpen ? "Hide My Boards" : "Show My Boards"}
-          >
-            📋 My Boards
-          </button>
-          {boardsPanelOpen && (
-            <button type="button" onClick={() => setBoardsPanelOpen(false)} className="rounded p-1.5 text-zinc-500 hover:bg-white/5" title="Collapse panel" aria-label="Collapse My Boards">
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
-            </button>
-          )}
           <button type="button" onClick={() => setTemplatesOpen(true)} className="rounded p-2 text-zinc-400 hover:bg-white/5 hover:text-white" title="Templates">📄</button>
           <button type="button" onClick={handleSave} className="rounded p-2 text-zinc-400 hover:bg-white/5 hover:text-white" title="Save">💾</button>
           <button type="button" onClick={handleExport} className="rounded p-2 text-zinc-400 hover:bg-white/5 hover:text-white" title="Export PNG">📤</button>
@@ -522,12 +531,12 @@ export default function WhiteboardPage() {
           <div className="h-full w-full">
             <Excalidraw
               key="whiteboard"
-              initialData={initialDataForBoard}
+              initialData={initialDataForBoard as React.ComponentProps<typeof Excalidraw>["initialData"]}
               theme="dark"
               onChange={(els, st, f) => {
-                setElements(els);
-                setAppState(st as Record<string, unknown>);
-                setFiles(f as Record<string, unknown> | null);
+                setElements([...els]);
+                setAppState(st as unknown as Record<string, unknown>);
+                setFiles(f as unknown as Record<string, unknown> | null);
               }}
               excalidrawAPI={(api) => { excalidrawRef.current = api as never; }}
             />

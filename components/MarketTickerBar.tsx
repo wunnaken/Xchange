@@ -15,6 +15,17 @@ type Ticker = {
   source: "live" | "mock";
 };
 
+const FALLBACK_TICKERS: Ticker[] = [
+  { id: "spy", name: "S&P 500", symbol: "SPY", price: 5850, change: 42.5, changePercent: 0.73, source: "mock" },
+  { id: "qqq", name: "Nasdaq", symbol: "QQQ", price: 5250, change: -18.2, changePercent: -0.35, source: "mock" },
+  { id: "btc", name: "Bitcoin", symbol: "BTC", price: 97200, change: 1200, changePercent: 1.25, source: "mock" },
+  { id: "eth", name: "Ethereum", symbol: "ETH", price: 3450, change: -22, changePercent: -0.63, source: "mock" },
+  { id: "gld", name: "Gold", symbol: "GLD", price: 265, change: 1.2, changePercent: 0.47, source: "mock" },
+  { id: "oil", name: "Oil", symbol: "OIL", price: 78.2, change: -1.1, changePercent: -1.39, source: "mock" },
+  { id: "dxy", name: "Dollar Index", symbol: "DXY", price: 104.2, change: 0.15, changePercent: 0.14, source: "mock" },
+  { id: "eurusd", name: "EUR/USD", symbol: "EURUSD", price: 1.085, change: -0.002, changePercent: -0.18, source: "mock" },
+];
+
 function getCachedTickers(): Ticker[] {
   if (typeof window === "undefined") return [];
   try {
@@ -82,8 +93,8 @@ function TickerSkeleton() {
 }
 
 export function MarketTickerBar() {
-  const [tickers, setTickers] = useState<Ticker[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [tickers, setTickers] = useState<Ticker[]>(FALLBACK_TICKERS);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -97,12 +108,14 @@ export function MarketTickerBar() {
           setTickers(list);
           setCachedTickers(list);
         } else {
-          setTickers(getCachedTickers());
+          const cached = getCachedTickers();
+          setTickers(cached.length > 0 ? cached : FALLBACK_TICKERS);
         }
       } catch {
-        if (!cancelled) setTickers(getCachedTickers());
-      } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          const cached = getCachedTickers();
+          setTickers(cached.length > 0 ? cached : FALLBACK_TICKERS);
+        }
       }
     }
     fetchTickers();

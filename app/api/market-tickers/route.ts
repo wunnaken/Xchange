@@ -71,7 +71,9 @@ async function fetchCryptoFromCoinGecko(ids: string): Promise<{ [id: string]: { 
   }
 }
 
-export async function GET() {
+const API_TIMEOUT_MS = 5000;
+
+async function fetchTickersWithTimeout(): Promise<TickerRow[]> {
   const finnhubKey = process.env.FINNHUB_API_KEY;
   const tickers: TickerRow[] = [];
 
@@ -103,6 +105,19 @@ export async function GET() {
   }
 
   const ordered = TICKER_ORDER.map((id) => tickers.find((t) => t.id === id) ?? MOCK_TICKERS.find((t) => t.id === id)).filter(Boolean) as TickerRow[];
-  const result = ordered.length >= 8 ? ordered : ordered.length > 0 ? ordered : MOCK_TICKERS;
-  return NextResponse.json(result.slice(0, 8));
+  return ordered.length >= 8 ? ordered : ordered.length > 0 ? ordered : MOCK_TICKERS;
+}
+
+export async function GET() {
+  try {
+    const result = await Promise.race([
+      fetchTickersWithTimeout(),
+      new Promise<TickerRow[]>((_, reject) =>
+        setTimeout(() => reject(new Error("timeout")), API_TIMEOUT_MS)
+      ),
+    ]);
+    return NextResponse.json(result.slice(0, 8));
+  } catch {
+    return NextResponse.json(MOCK_TICKERS.slice(0, 8));
+  }
 }

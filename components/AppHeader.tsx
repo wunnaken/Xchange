@@ -11,7 +11,7 @@ export function AppHeader() {
   const { user } = useAuth();
   return (
     <header
-      className="border-b backdrop-blur transition-colors duration-300"
+      className="overflow-visible border-b backdrop-blur transition-colors duration-300"
       style={{
         backgroundColor: "var(--app-navbar-bg)",
         borderColor: "var(--app-navbar-border)",
@@ -20,7 +20,7 @@ export function AppHeader() {
       role="banner"
     >
       <nav
-        className="mx-auto flex max-w-6xl items-center gap-4 px-6 py-4.5 lg:px-8"
+        className="mx-auto flex max-w-6xl items-center gap-4 overflow-visible px-6 py-4.5 lg:px-8"
         aria-label="Main navigation"
       >
         <div className="flex shrink-0 items-center gap-4">
@@ -34,7 +34,21 @@ export function AppHeader() {
           </Link>
         </div>
 
-        <MarketTickerBar />
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <Link
+            href="/watchlist"
+            className="flex shrink-0 items-center justify-center rounded p-2 text-zinc-400 transition-colors hover:bg-white/5 hover:text-[var(--accent-color)]"
+            aria-label="My Watchlist"
+            title="My Watchlist"
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+            </svg>
+          </Link>
+          <div className="min-w-0 flex-1">
+            <MarketTickerBar />
+          </div>
+        </div>
 
         <div className="flex shrink-0 items-center gap-3">
           <DemoInfoIcon />

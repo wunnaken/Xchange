@@ -23,6 +23,9 @@ import { loadStreaks } from "../../lib/engagement/streaks";
 import { STREAK_BADGES } from "../../lib/engagement/constants";
 import { loadXP, getRankTitle } from "../../lib/engagement/xp";
 import { isEarlyMember, getOrCreateInviteCode, getInvitedCount } from "../../lib/engagement/invite";
+import { VerifiedBadge } from "../../components/VerifiedBadge";
+import { isVerified } from "../../lib/verified";
+import { getTrades, computePnL, formatPercent } from "../../lib/journal";
 
 const POSTS_KEY = "xchange-demo-posts";
 const USERNAME_CHANGED_AT_KEY = "xchange-username-changed-at";
@@ -43,6 +46,25 @@ function formatJoinedDate(iso?: string) {
   }
 }
 
+/** Build 7-day history [day-6 … today] from last activity date and current streak. */
+function getSevenDayHistory(lastDate: string, streak: number): boolean[] {
+  if (typeof window === "undefined" || !lastDate || streak <= 0) return [false, false, false, false, false, false, false];
+  const today = new Date();
+  const out: boolean[] = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - (6 - i));
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const last = new Date(lastDate + "T12:00:00");
+    const streakStart = new Date(last);
+    streakStart.setDate(streakStart.getDate() - (streak - 1));
+    const keyTime = new Date(key + "T12:00:00").getTime();
+    const active = keyTime >= streakStart.getTime() && keyTime <= last.getTime();
+    out.push(active);
+  }
+  return out;
+}
+
 function getInitials(user: User) {
   const name = (user.name || user.username || user.email || "?").trim();
   if (!name) return "?";
@@ -58,6 +80,110 @@ function readFileAsDataUrl(file: File): Promise<string> {
     r.onerror = reject;
     r.readAsDataURL(file);
   });
+}
+
+type Timeframe = "all" | "year" | "month";
+
+function getPerformanceFromTrades(timeframe: Timeframe) {
+  const trades = getTrades();
+  const now = new Date();
+  const yearStart = new Date(now.getFullYear(), 0, 1).toISOString();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const filtered = trades.filter((t) => {
+    const d = t.exitDate ?? t.entryDate;
+    if (!d) return false;
+    if (timeframe === "all") return true;
+    if (timeframe === "year") return d >= yearStart;
+    return d >= monthStart;
+  });
+  type WithPnL = { trade: (typeof filtered)[0]; pnl: NonNullable<ReturnType<typeof computePnL>> };
+  const withPnL: WithPnL[] = filtered.map((t) => ({ trade: t, pnl: computePnL(t) })).filter((x): x is WithPnL => x.pnl != null);
+  const total = withPnL.length;
+  const wins = withPnL.filter((x) => x.pnl.pnlPercent > 0).length;
+  const winRate = total > 0 ? (wins / total) * 100 : 0;
+  const avgReturn = total > 0 ? withPnL.reduce((s, x) => s + x.pnl.pnlPercent, 0) / total : 0;
+  const best = withPnL.length > 0 ? withPnL.reduce((a, x) => (x.pnl.pnlPercent > a.pnl.pnlPercent ? x : a), withPnL[0]) : null;
+  const worst = withPnL.length > 0 ? withPnL.reduce((a, x) => (x.pnl.pnlPercent < a.pnl.pnlPercent ? x : a), withPnL[0]) : null;
+  const loginStreak = loadStreaks().loginStreak;
+  return { total, winRate, avgReturn, best, worst, loginStreak };
+}
+
+function ProfilePerformanceCard() {
+  const [timeframe, setTimeframe] = useState<Timeframe>("all");
+  const stats = getPerformanceFromTrades(timeframe);
+  const hasData = stats.total > 0;
+
+  return (
+    <section className="mb-6 rounded-xl border-l-4 border-[#3B82F6] bg-[#3B82F6]/10 p-4" style={{ boxShadow: "0 0 24px rgba(59,130,246,0.15)" }} aria-label="Trader Performance">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="flex items-center gap-2 text-sm font-semibold text-zinc-50">
+          <span aria-hidden>📊</span>
+          Trader Performance
+          <VerifiedBadge size={16} />
+          <span className="text-xs font-normal text-zinc-400">Verified Stats</span>
+        </h2>
+        <div className="flex gap-1">
+          {(["all", "year", "month"] as const).map((tf) => (
+            <button key={tf} type="button" onClick={() => setTimeframe(tf)} className={`rounded px-2 py-1 text-xs font-medium ${timeframe === tf ? "bg-[#3B82F6]/30 text-white" : "bg-white/5 text-zinc-400 hover:bg-white/10"}`}>
+              {tf === "all" ? "All Time" : tf === "year" ? "This Year" : "This Month"}
+            </button>
+          ))}
+        </div>
+      </div>
+      {!hasData ? (
+        <p className="mt-3 text-sm text-zinc-500">Log trades in your journal to populate your performance card.</p>
+      ) : (
+        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <div className="rounded-lg bg-black/20 p-3">
+            <p className="text-xs text-zinc-400">Win Rate</p>
+            <p className="text-lg font-bold text-white">{stats.winRate.toFixed(1)}%</p>
+          </div>
+          <div className="rounded-lg bg-black/20 p-3">
+            <p className="text-xs text-zinc-400">Total Trades</p>
+            <p className="text-lg font-bold text-white">{stats.total}</p>
+          </div>
+          <div className="rounded-lg bg-black/20 p-3">
+            <p className="text-xs text-zinc-400">Avg Return</p>
+            <p className="text-lg font-bold text-white">{formatPercent(stats.avgReturn)}</p>
+          </div>
+          <div className="rounded-lg bg-black/20 p-3">
+            <p className="text-xs text-zinc-400">Best Trade</p>
+            <p className="text-lg font-bold text-emerald-400">{stats.best ? `${formatPercent(stats.best.pnl.pnlPercent)} (${stats.best.trade.asset})` : "—"}</p>
+          </div>
+          <div className="rounded-lg bg-black/20 p-3">
+            <p className="text-xs text-zinc-400">Worst Trade</p>
+            <p className="text-lg font-bold text-red-400">{stats.worst ? `${formatPercent(stats.worst.pnl.pnlPercent)} (${stats.worst.trade.asset})` : "—"}</p>
+          </div>
+          <div className="rounded-lg bg-black/20 p-3">
+            <p className="text-xs text-zinc-400">Streak</p>
+            <p className="text-lg font-bold text-white">{stats.loginStreak} days</p>
+          </div>
+        </div>
+      )}
+      {hasData && (
+        <button type="button" className="mt-3 rounded-lg border border-[#3B82F6]/50 bg-[#3B82F6]/10 px-3 py-1.5 text-xs font-medium text-[#3B82F6] hover:bg-[#3B82F6]/20">
+          Share my performance
+        </button>
+      )}
+    </section>
+  );
+}
+
+function ProfileMonetizeSection() {
+  return (
+    <section className="mb-6 rounded-xl border border-white/10 bg-white/5 p-4" aria-label="My Community">
+      <h2 className="text-sm font-semibold text-zinc-50">Create a paid community</h2>
+      <p className="mt-1 text-xs text-zinc-400">Set your community name, monthly price ($5 – $100), and description. <Link href="/monetization" className="text-[var(--accent-color)] hover:underline">View our monetization policy</Link> for details on revenue share and payouts.</p>
+      <div className="mt-4 space-y-3">
+        <input type="text" placeholder="Community name" className="w-full rounded-lg border border-white/20 bg-black/40 px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-500" readOnly aria-hidden />
+        <input type="number" placeholder="Monthly price ($)" className="w-full rounded-lg border border-white/20 bg-black/40 px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-500" readOnly aria-hidden />
+        <textarea placeholder="Description" rows={2} className="w-full rounded-lg border border-white/20 bg-black/40 px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-500" readOnly aria-hidden />
+        <button type="button" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-200">
+          Coming with full launch
+        </button>
+      </div>
+    </section>
+  );
 }
 
 export default function ProfilePage() {
@@ -630,6 +756,11 @@ export default function ProfilePage() {
                     <h1 className="text-2xl font-bold tracking-tight text-zinc-50 sm:text-3xl">
                       {displayName}
                     </h1>
+                    {isVerified(user?.email) && (
+                      <span className="inline-flex items-center" title="Verified Trader — Identity and track record confirmed">
+                        <VerifiedBadge size={22} />
+                      </span>
+                    )}
                     {isEarlyMember() && (
                       <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2.5 py-0.5 text-xs font-medium text-amber-400" title="Joined Xchange in the early days">
                         ⭐ Early Member
@@ -654,6 +785,11 @@ export default function ProfilePage() {
                   </div>
                   <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-zinc-400">
                       @{displayUsername}
+                      {isVerified(user?.email) && (
+                        <span className="inline-flex items-center" title="Verified Trader">
+                          <VerifiedBadge size={16} />
+                        </span>
+                      )}
                       <span className="inline-flex items-center gap-1 text-[var(--accent-color)]" title="XP from activity">
                         <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
                         {loadXP().total} XP
@@ -804,6 +940,27 @@ export default function ProfilePage() {
               </div>
             </div>
           </section>
+
+          {/* Upgrade banner — only for non-verified users */}
+          {!isVerified(user?.email) && (
+            <section className="mt-6 rounded-xl border-l-4 border-[#3B82F6] bg-[#3B82F6]/10 p-4" aria-label="Become a Verified Trader">
+              <div className="flex flex-wrap items-center gap-4 sm:gap-6">
+                <div className="flex-shrink-0">
+                  <VerifiedBadge size={48} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h3 className="font-bold text-white">Become a Verified Trader</h3>
+                  <p className="mt-1 text-sm text-zinc-300">Get your blue checkmark, performance card, exclusive communities and the ability to monetize your own group.</p>
+                  <p className="mt-1.5 text-xs text-zinc-500">⭐ 847 traders already verified</p>
+                </div>
+                <div className="flex flex-shrink-0 flex-col items-end gap-2">
+                  <p className="text-2xl font-bold text-[#3B82F6]">$9/month</p>
+                  <Link href="/verify" className="rounded-full bg-[#3B82F6] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#3B82F6]/90">Start 7-day free trial</Link>
+                  <Link href="/verify" className="text-xs text-[#3B82F6] hover:underline">Learn more →</Link>
+                </div>
+              </div>
+            </section>
+          )}
         </div>
 
         {/* Spacer so content below doesn't sit under overlap */}
@@ -811,15 +968,19 @@ export default function ProfilePage() {
 
         {/* Card wrapper for rest of profile — full rounded card with spacing from content above and footer */}
         <div className="mb-12 mt-8 rounded-2xl border px-6 pb-8 pt-6 transition-colors duration-300 sm:rounded-3xl sm:px-8" style={{ backgroundColor: "var(--app-card-alt)", borderColor: "var(--app-border)" }}>
+        {isVerified(user?.email) && <ProfilePerformanceCard />}
+        {isVerified(user?.email) && <ProfileMonetizeSection />}
         {/* Your Streaks — aligned with this card, slightly bigger */}
           <section className="mb-6" aria-label="Your streaks">
             <h2 className="text-sm font-semibold text-zinc-50">Your Streaks</h2>
             <div className="mt-3 grid grid-cols-3 gap-4">
               {[
-                { emoji: "🔥", label: "Login", streak: streakData.loginStreak, best: streakData.bestLoginStreak, history: streakData.loginHistory },
-                { emoji: "📓", label: "Journal", streak: streakData.journalStreak, best: streakData.bestJournalStreak, history: streakData.journalHistory },
-                { emoji: "📋", label: "Briefing", streak: streakData.briefingStreak, best: streakData.bestBriefingStreak, history: streakData.briefingHistory },
-              ].map(({ emoji, label, streak, best, history }) => (
+                { emoji: "🔥", label: "Login", streak: streakData.loginStreak, best: streakData.bestLoginStreak, lastDate: streakData.lastLogin },
+                { emoji: "📓", label: "Journal", streak: streakData.journalStreak, best: streakData.bestJournalStreak, lastDate: streakData.lastJournal },
+                { emoji: "📋", label: "Briefing", streak: streakData.briefingStreak, best: streakData.bestBriefingStreak, lastDate: streakData.lastBriefing },
+              ].map(({ emoji, label, streak, best, lastDate }) => {
+                const history = lastDate ? getSevenDayHistory(lastDate, streak) : [false, false, false, false, false, false, false];
+                return (
                 <div key={label} className="rounded-xl border border-white/10 bg-black/20 p-4 text-center">
                   <span className="text-2xl" aria-hidden>{emoji}</span>
                   <p className="mt-1.5 text-2xl font-bold text-[var(--accent-color)]">{streak}</p>
@@ -844,7 +1005,8 @@ export default function ProfilePage() {
                     <p className="mt-0.5 text-[10px] font-medium text-amber-400">{STREAK_BADGES[7]}</p>
                   )}
                 </div>
-              ))}
+              );
+              })}
             </div>
           </section>
 

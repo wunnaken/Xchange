@@ -23,9 +23,11 @@ const PROTECTED_PATHS = [
   "/onboarding",
   "/settings",
   "/ethics",
-  "/pricing",
+  "/plans",
   "/profiles",
   "/watchlist",
+  "/datahub",
+  "/verify",
 ];
 
 function isProtectedPath(pathname: string): boolean {
@@ -101,5 +103,9 @@ export const config = {
     "/profiles/:path*",
     "/watchlist",
     "/watchlist/:path*",
+    "/datahub",
+    "/datahub/:path*",
+    "/verify",
+    "/verify/:path*",
   ],
 };

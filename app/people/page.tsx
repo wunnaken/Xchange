@@ -3,7 +3,10 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useState } from "react";
+import { useAuth } from "../../components/AuthContext";
 import { getInitials } from "../../lib/suggested-people";
+import { VerifiedBadge } from "../../components/VerifiedBadge";
+import { isVerified } from "../../lib/verified";
 
 const RISK_STYLES: Record<string, string> = {
   Conservative: "bg-[var(--accent-color)]/20 text-[var(--accent-color)]",
@@ -16,6 +19,7 @@ type SuggestedProfile = {
   name: string;
   username: string;
   risk_profile: string;
+  verified?: boolean;
 };
 
 function UserCard({
@@ -42,9 +46,10 @@ function UserCard({
         <div className="min-w-0 flex-1">
           <Link
             href={`/profile?u=${user.id}`}
-            className="font-semibold text-zinc-100 hover:text-[var(--accent-color)]"
+            className="flex items-center gap-1.5 font-semibold text-zinc-100 hover:text-[var(--accent-color)]"
           >
             {user.name}
+            {user.verified && <VerifiedBadge size={16} />}
           </Link>
           <p className="text-xs text-zinc-500">@{user.username}</p>
           <span
@@ -93,12 +98,16 @@ async function fetchFollowed(): Promise<string[]> {
 }
 
 function PeopleContent() {
+  const { user } = useAuth();
   const searchParams = useSearchParams();
   const qFromUrl = searchParams.get("q") ?? "";
   const [query, setQuery] = useState(qFromUrl);
   const [profiles, setProfiles] = useState<SuggestedProfile[]>([]);
   const [followed, setFollowed] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const [verifiedOnly, setVerifiedOnly] = useState(false);
+  const [showVerifiedPrompt, setShowVerifiedPrompt] = useState(false);
+  const verified = isVerified(user?.email);
 
   useEffect(() => {
     setQuery(qFromUrl);
@@ -107,7 +116,7 @@ function PeopleContent() {
   const refresh = useCallback(async () => {
     try {
       const [list, ids] = await Promise.all([fetchSuggested(), fetchFollowed()]);
-      setProfiles(list);
+      setProfiles(list.map((p, i) => ({ ...p, verified: p.verified ?? i < 2 })));
       setFollowed(ids);
     } catch {
       setProfiles([]);
@@ -144,7 +153,7 @@ function PeopleContent() {
     }
   };
 
-  const filtered =
+  const searchFiltered =
     query.trim()
       ? profiles.filter(
           (u) =>
@@ -152,6 +161,11 @@ function PeopleContent() {
             u.username.toLowerCase().includes(query.toLowerCase())
         )
       : profiles;
+  const filtered = verifiedOnly ? searchFiltered.filter((u) => u.verified) : searchFiltered;
+  const handleVerifiedOnlyClick = () => {
+    if (verified) setVerifiedOnly((v) => !v);
+    else setShowVerifiedPrompt(true);
+  };
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8">
@@ -159,12 +173,32 @@ function PeopleContent() {
       <p className="mt-1 text-sm text-zinc-400">
         Discover traders to follow. They’ll show up in your feed and in People You Follow.
       </p>
+      <div className="mt-6 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={handleVerifiedOnlyClick}
+          className={`rounded-full border px-4 py-2 text-sm font-medium transition ${
+            verifiedOnly ? "border-[#3B82F6] bg-[#3B82F6]/20 text-[#3B82F6]" : "border-white/10 text-zinc-400 hover:bg-white/5"
+          }`}
+        >
+          Verified Only
+        </button>
+      </div>
+      {showVerifiedPrompt && (
+        <div className="mt-4 rounded-xl border border-[#3B82F6]/30 bg-[#3B82F6]/10 p-4">
+          <p className="font-medium text-white">See only verified traders and join their ranks for $9/month</p>
+          <div className="mt-3 flex gap-2">
+            <Link href="/verify" className="rounded-full bg-[#3B82F6] px-4 py-2 text-sm font-semibold text-white hover:bg-[#3B82F6]/90">Get Verified →</Link>
+            <button type="button" onClick={() => setShowVerifiedPrompt(false)} className="rounded-full border border-white/20 px-4 py-2 text-sm text-zinc-300 hover:bg-white/5">Cancel</button>
+          </div>
+        </div>
+      )}
       <input
         type="search"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         placeholder="Search by name or @handle..."
-        className="mt-6 w-full rounded-xl border border-white/10 bg-[#0F1520] px-4 py-3 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition-colors focus:border-[var(--accent-color)]/50"
+        className="mt-4 w-full rounded-xl border border-white/10 bg-[#0F1520] px-4 py-3 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition-colors focus:border-[var(--accent-color)]/50"
         aria-label="Search users"
       />
       {loading ? (

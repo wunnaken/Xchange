@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -73,6 +73,46 @@ async function fetchCryptoFromCoinGecko(ids: string): Promise<{ [id: string]: { 
 
 const API_TIMEOUT_MS = 5000;
 
+const SYMBOL_NAMES: Record<string, string> = {
+  SPY: "S&P 500", QQQ: "Nasdaq", BTC: "Bitcoin", ETH: "Ethereum", GLD: "Gold",
+  OIL: "Oil", USO: "Oil", DXY: "Dollar Index", EURUSD: "EUR/USD",
+};
+
+async function fetchCustomTickers(symbols: string[], token: string | undefined): Promise<TickerRow[]> {
+  const normalized = symbols.slice(0, 8).map((s) => s.toUpperCase().trim()).filter(Boolean);
+  if (normalized.length === 0) return [];
+  const tickers: TickerRow[] = [];
+  const crypto = normalized.filter((s) => s === "BTC" || s === "ETH");
+  const stocks = normalized.filter((s) => s !== "BTC" && s !== "ETH");
+  if (token && stocks.length > 0) {
+    const finnhubSymbol = (s: string) => (s === "EURUSD" ? "OANDA:EUR_USD" : s);
+    const results = await Promise.all(stocks.map((sym) => fetchFinnhubQuote(finnhubSymbol(sym), token)));
+    results.forEach((q, i) => {
+      if (q && stocks[i]) {
+        const sym = stocks[i];
+        const id = sym.toLowerCase().replace(/[^a-z0-9]/g, "");
+        tickers.push({
+          id: id || sym.toLowerCase(),
+          name: SYMBOL_NAMES[sym] ?? sym,
+          symbol: sym,
+          price: q.c,
+          change: q.d,
+          changePercent: q.dp,
+          source: "live",
+        });
+      }
+    });
+  }
+  if (crypto.length > 0) {
+    const ids = crypto.map((s) => (s === "BTC" ? "bitcoin" : "ethereum")).join(",");
+    const cg = await fetchCryptoFromCoinGecko(ids);
+    if (cg?.bitcoin) tickers.push({ id: "btc", name: "Bitcoin", symbol: "BTC", price: cg.bitcoin.price, change: (cg.bitcoin.price * cg.bitcoin.changePercent) / 100, changePercent: cg.bitcoin.changePercent, source: "live" });
+    if (cg?.ethereum) tickers.push({ id: "eth", name: "Ethereum", symbol: "ETH", price: cg.ethereum.price, change: (cg.ethereum.price * cg.ethereum.changePercent) / 100, changePercent: cg.ethereum.changePercent, source: "live" });
+  }
+  const order = normalized.map((s) => tickers.find((t) => t.symbol.toUpperCase() === s)).filter(Boolean) as TickerRow[];
+  return order.length > 0 ? order : tickers;
+}
+
 async function fetchTickersWithTimeout(): Promise<TickerRow[]> {
   const finnhubKey = process.env.FINNHUB_API_KEY;
   const tickers: TickerRow[] = [];
@@ -108,7 +148,26 @@ async function fetchTickersWithTimeout(): Promise<TickerRow[]> {
   return ordered.length >= 8 ? ordered : ordered.length > 0 ? ordered : MOCK_TICKERS;
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const symbolsParam = request.nextUrl.searchParams.get("symbols");
+  const customSymbols = symbolsParam ? symbolsParam.split(",").map((s) => s.trim()).filter(Boolean) : null;
+
+  if (customSymbols && customSymbols.length > 0) {
+    try {
+      const token = process.env.FINNHUB_API_KEY;
+      const result = await Promise.race([
+        fetchCustomTickers(customSymbols, token ?? undefined),
+        new Promise<TickerRow[]>((_, reject) =>
+          setTimeout(() => reject(new Error("timeout")), API_TIMEOUT_MS)
+        ),
+      ]);
+      const out = result.slice(0, 8);
+      return NextResponse.json(out.length > 0 ? out : MOCK_TICKERS.slice(0, 8));
+    } catch {
+      return NextResponse.json(MOCK_TICKERS.slice(0, 8));
+    }
+  }
+
   try {
     const result = await Promise.race([
       fetchTickersWithTimeout(),

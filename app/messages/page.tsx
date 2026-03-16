@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { getInitials } from "../../lib/suggested-people";
 import { SAMPLE_DMS, SAMPLE_GROUPS, type Message } from "../../lib/messages-data";
+import { VerifiedBadge } from "../../components/VerifiedBadge";
 
 const CARD_BG = "#0F1520";
 
@@ -188,7 +189,10 @@ function MessagesContent() {
                       )}
                     </div>
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-zinc-200">{c.name}</p>
+                      <p className="flex items-center gap-1.5 truncate text-sm font-medium text-zinc-200">
+                        {c.name}
+                        {c.verified && <VerifiedBadge size={14} />}
+                      </p>
                       <p className="truncate text-xs text-zinc-500">{last?.text ?? c.lastMessage}</p>
                     </div>
                     <div className="shrink-0 text-right">
@@ -267,7 +271,10 @@ function MessagesContent() {
                 {currentGroup ? displayName.slice(0, 2).toUpperCase() : getInitials(displayName)}
               </span>
               <div className="min-w-0 flex-1">
-                <p className="font-medium text-zinc-100">{displayName}</p>
+                <p className="flex items-center gap-1.5 font-medium text-zinc-100">
+                  {displayName}
+                  {currentDm?.verified && <VerifiedBadge size={14} />}
+                </p>
                 <p className="text-xs text-zinc-500">
                   {currentGroup ? `${currentGroup.memberCount} members` : `@${displayHandle}`}
                   {!currentGroup && (

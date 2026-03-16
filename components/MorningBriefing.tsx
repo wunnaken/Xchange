@@ -313,6 +313,11 @@ export function MorningBriefing({
 
               <p className="text-center italic text-zinc-500">&ldquo;{briefing.oneLiner}&rdquo;</p>
 
+              <div className="mt-10 rounded-xl border border-[#3B82F6]/30 bg-[#3B82F6]/10 p-4">
+                <p className="text-sm font-medium text-white">💡 Tip: Verified Traders get their morning briefing personalized to their exact portfolio and trade journal.</p>
+                <Link href="/verify" className="mt-2 inline-block text-sm font-medium text-[#3B82F6] hover:underline">Upgrade for $9/month →</Link>
+              </div>
+
               <footer className="mt-12 flex flex-col items-center gap-4 border-t border-white/10 pt-8">
                 <p className="text-center text-xs text-zinc-500">
                   AI-generated briefing based on current market data. Not financial advice.

@@ -14,6 +14,7 @@ export type DMConversation = {
   lastAt: string;
   unread: number;
   messages: Message[];
+  verified?: boolean;
 };
 
 export type GroupConversation = {

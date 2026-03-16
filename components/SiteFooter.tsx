@@ -24,6 +24,14 @@ const PLATFORM_LINKS = [
   { label: "Market Map", href: "/map" },
 ];
 
+const PLANS_LINKS = [
+  { label: "Plans", href: "/plans" },
+  { label: "Starter · Free", href: "/plans" },
+  { label: "Pro · $19/mo", href: "/plans" },
+  { label: "Enterprise", href: "/plans" },
+  { label: "Verified Trader · $9/mo", href: "/verify" },
+];
+
 const RESOURCES_LINKS = [
   { label: "Getting Started (coming soon)", href: "#" },
   { label: "Risk Profiles Explained", href: "/profiles" },
@@ -101,7 +109,7 @@ export function SiteFooter() {
       role="contentinfo"
     >
       <div className="mx-auto max-w-6xl px-6 lg:px-8">
-        <div className="grid grid-cols-2 gap-8 md:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-8 md:grid-cols-2 lg:grid-cols-5">
           {/* Column 1 — Brand */}
           <div className="flex flex-col gap-4 lg:col-span-1">
             <div className="flex items-center gap-2.5">
@@ -150,6 +158,7 @@ export function SiteFooter() {
           </div>
 
           <FooterColumn title="Platform" links={PLATFORM_LINKS} />
+          <FooterColumn title="Plans" links={PLANS_LINKS} />
           <FooterColumn title="Resources" links={RESOURCES_LINKS} />
           <FooterColumn title="Company" links={companyLinks} />
         </div>

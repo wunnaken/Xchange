@@ -2,6 +2,9 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { useAuth } from "../../components/AuthContext";
+import { VerifiedBadge } from "../../components/VerifiedBadge";
+import { isVerified } from "../../lib/verified";
 
 type RoomRow = {
   id: string;
@@ -39,9 +42,31 @@ const MOCK_ALL_TIME: RoomRow[] = [
   { id: "a10", name: "New Trader Hub", slug: "new-trader", exclusive: false, members: "1.4k", activity: "4k total", description: "Learning and first steps" },
 ];
 
+type VerifiedTraderRow = {
+  id: string;
+  name: string;
+  handle: string;
+  winRate: number;
+  avgReturn: number;
+  totalTrades: number;
+  bestTrade: string;
+};
+
+const MOCK_VERIFIED_TRADERS: VerifiedTraderRow[] = [
+  { id: "v1", name: "Alex R.", handle: "alex_r", winRate: 68, avgReturn: 4.2, totalTrades: 142, bestTrade: "+24% (NVDA)" },
+  { id: "v2", name: "Sam C.", handle: "sam_c", winRate: 65, avgReturn: 3.8, totalTrades: 98, bestTrade: "+19% (TSLA)" },
+  { id: "v3", name: "Jordan L.", handle: "jordan_lee", winRate: 62, avgReturn: 3.1, totalTrades: 201, bestTrade: "+31% (META)" },
+  { id: "v4", name: "Morgan T.", handle: "morgan_t", winRate: 60, avgReturn: 2.9, totalTrades: 87, bestTrade: "+18% (AAPL)" },
+  { id: "v5", name: "Casey K.", handle: "casey_k", winRate: 58, avgReturn: 2.5, totalTrades: 156, bestTrade: "+22% (GOOGL)" },
+];
+
 export default function LeaderboardPage() {
-  const [tab, setTab] = useState<"weekly" | "alltime">("weekly");
-  const rows = tab === "weekly" ? MOCK_WEEKLY : MOCK_ALL_TIME;
+  const { user } = useAuth();
+  const [tab, setTab] = useState<"weekly" | "alltime" | "verified">("weekly");
+  const rows = tab === "weekly" ? MOCK_WEEKLY : tab === "alltime" ? MOCK_ALL_TIME : [];
+  const verifiedRows = MOCK_VERIFIED_TRADERS;
+  const currentHandle = user?.username || user?.email?.split("@")[0] || "";
+  const verified = isVerified(user?.email);
 
   return (
     <div className="min-h-screen app-page font-[&quot;Times_New_Roman&quot;,serif]">
@@ -77,8 +102,69 @@ export default function LeaderboardPage() {
           >
             All Time
           </button>
+          <button
+            type="button"
+            onClick={() => setTab("verified")}
+            className={`rounded-full border px-4 py-2 text-sm font-medium transition ${
+              tab === "verified"
+                ? "border-[#3B82F6]/50 bg-[#3B82F6]/10 text-[#3B82F6]"
+                : "border-white/10 text-zinc-400 hover:bg-white/5"
+            }`}
+          >
+            Verified Traders
+          </button>
         </div>
 
+        {tab === "verified" && !verified && (
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#3B82F6]/30 bg-[#3B82F6]/10 p-4">
+            <div>
+              <p className="font-bold text-white">You&apos;re not on this leaderboard yet</p>
+              <p className="mt-1 text-sm text-zinc-400">Verified traders get their own ranked leaderboard based on real win rate and performance.</p>
+            </div>
+            <Link href="/verify" className="shrink-0 rounded-full bg-[#3B82F6] px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-[#3B82F6]/90">Join for $9/month →</Link>
+          </div>
+        )}
+        {tab === "verified" ? (
+          <div className="overflow-hidden rounded-2xl border border-white/10 bg-[#0F1520]">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-white/10 bg-black/20">
+                  <th className="px-4 py-3 font-medium text-zinc-400">Rank</th>
+                  <th className="px-4 py-3 font-medium text-zinc-400">Trader</th>
+                  <th className="px-4 py-3 font-medium text-zinc-400">Win Rate</th>
+                  <th className="px-4 py-3 font-medium text-zinc-400">Avg Return</th>
+                  <th className="px-4 py-3 font-medium text-zinc-400">Total Trades</th>
+                  <th className="px-4 py-3 font-medium text-zinc-400">Best Trade</th>
+                </tr>
+              </thead>
+              <tbody>
+                {verifiedRows.map((row, idx) => {
+                  const rank = idx + 1;
+                  const isCurrentUser = currentHandle && (row.handle === currentHandle || row.name === user?.name);
+                  return (
+                    <tr key={row.id} className={`border-b border-white/5 transition-colors hover:bg-white/5 ${isCurrentUser && verified ? "bg-[#3B82F6]/10" : ""}`}>
+                      <td className="px-4 py-3">
+                        <span className="text-zinc-500">{rank}</span>
+                        {rank <= 3 && <span className="ml-1 text-base" aria-hidden>👑</span>}
+                      </td>
+                      <td className="px-4 py-3">
+                        <Link href={`/profile?u=${row.id}`} className="flex items-center gap-2">
+                          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-xs font-semibold text-zinc-300">{row.name.slice(0, 2)}</span>
+                          <VerifiedBadge size={16} />
+                          <span className="font-medium text-zinc-100">{row.name}</span>
+                        </Link>
+                      </td>
+                      <td className="px-4 py-3 text-zinc-400">{row.winRate}%</td>
+                      <td className="px-4 py-3 text-emerald-400">+{row.avgReturn}%</td>
+                      <td className="px-4 py-3 text-zinc-400">{row.totalTrades}</td>
+                      <td className="px-4 py-3 text-zinc-400">{row.bestTrade}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
         <div className="overflow-hidden rounded-2xl border border-white/10 bg-[#0F1520]">
           <table className="w-full text-left text-sm">
             <thead>
@@ -122,6 +208,7 @@ export default function LeaderboardPage() {
             </tbody>
           </table>
         </div>
+        )}
 
         <p className="mt-6 text-center text-xs text-zinc-500">
           <Link href="/communities" className="text-[var(--accent-color)] hover:underline">Browse all rooms</Link>

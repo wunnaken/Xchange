@@ -112,19 +112,20 @@ export async function GET(request: NextRequest) {
       if (Array.isArray(o.economicCalendar)) rawList = o.economicCalendar;
       else if (Array.isArray(o.economic)) rawList = o.economic;
       else if (Array.isArray(o.data)) rawList = o.data;
+      else if (Array.isArray(o.calendar)) rawList = o.calendar;
       else {
         for (const v of Object.values(o)) {
-          if (Array.isArray(v) && v.length > 0 && typeof v[0] === "object" && v[0] !== null && ("event" in v[0] || "date" in v[0])) {
+          if (Array.isArray(v) && v.length > 0 && typeof v[0] === "object" && v[0] !== null && ("event" in v[0] || "date" in v[0] || "title" in v[0])) {
             rawList = v;
             break;
           }
         }
       }
     }
-    const list = rawList as Array<{ date?: string; time?: string; country?: string; event?: string; previous?: string; estimate?: string; actual?: string; impact?: string }>;
+    const list = rawList as Array<{ date?: string; time?: string; country?: string; event?: string; title?: string; previous?: string; estimate?: string; actual?: string; impact?: string }>;
     list.forEach((e, i) => {
-      const eventName = (e.event ?? (e as Record<string, unknown>).name ?? "Event").toString();
-      const eventDate = (e.date ?? "").toString();
+      const eventName = (e.event ?? (e as Record<string, unknown>).name ?? e.title ?? "Event").toString();
+      const eventDate = (e.date ?? "").toString().slice(0, 10);
       if (!eventDate) return;
       const impact = (e.impact?.toUpperCase() === "HIGH" ? "HIGH" : e.impact?.toUpperCase() === "LOW" ? "LOW" : "MEDIUM") as "HIGH" | "MEDIUM" | "LOW";
       out.push({
@@ -139,6 +140,31 @@ export async function GET(request: NextRequest) {
         actual: e.actual != null ? String(e.actual) : undefined,
       });
     });
+    return out;
+  }
+
+  /** Generate placeholder economic events for the week when API returns nothing */
+  function getPlaceholderEconomicForRange(from: Date, to: Date): EconomicItem[] {
+    const out: EconomicItem[] = [];
+    const events: { name: string; impact: "HIGH" | "MEDIUM" | "LOW" }[] = [
+      { name: "Consumer Price Index (CPI)", impact: "HIGH" },
+      { name: "Non-Farm Payrolls (NFP)", impact: "HIGH" },
+      { name: "FOMC Rate Decision", impact: "HIGH" },
+      { name: "Retail Sales", impact: "MEDIUM" },
+      { name: "Initial Jobless Claims", impact: "LOW" },
+    ];
+    const cur = new Date(from);
+    let idx = 0;
+    while (cur <= to && idx < events.length) {
+      const day = cur.getDay();
+      if (day >= 1 && day <= 5) {
+        const d = cur.toISOString().slice(0, 10);
+        const e = events[idx];
+        out.push({ id: `ph-${idx}-${d}`, name: e.name, date: d, dateTimeET: d, impact: e.impact, country: "US" });
+        idx++;
+      }
+      cur.setDate(cur.getDate() + 1);
+    }
     return out;
   }
 
@@ -173,8 +199,8 @@ export async function GET(request: NextRequest) {
       if (res.ok && data) {
         const latest = parseEconomicResponse(data)
           .filter((e) => e.date)
-          .sort((a, b) => b.date.localeCompare(a.date))
-          .slice(0, 50);
+          .sort((a, b) => a.date.localeCompare(b.date))
+          .slice(0, 80);
         latest.forEach((e) => economic.push(e));
         economicFallback = economic.length > 0;
       }
@@ -183,5 +209,13 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  return NextResponse.json({ earnings, economic, economicFallback, economicSample: false });
+  let economicSample = false;
+  if (economic.length === 0) {
+    const placeholders = getPlaceholderEconomicForRange(fromDate, toDate);
+    placeholders.forEach((e) => economic.push(e));
+    economicFallback = true;
+    economicSample = true;
+  }
+
+  return NextResponse.json({ earnings, economic, economicFallback, economicSample });
 }

@@ -9,7 +9,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isLanding = pathname === "/";
   const isAboutPage = pathname === "/about";
   const isIdlePage = pathname === "/idle";
-  const isFullPage = pathname.startsWith("/auth") || pathname === "/onboarding" || pathname === "/plans";
+  const isFullPage = pathname.startsWith("/auth") || pathname === "/onboarding";
 
   if (isIdlePage) {
     return <>{children}</>;

@@ -188,6 +188,9 @@ export default function WhiteboardPage() {
   const [isMobile, setIsMobile] = useState(false);
   const excalidrawRef = useRef<{ updateScene: (opts: { elements?: unknown[]; appState?: Record<string, unknown> }) => void } | null>(null);
   const sceneRef = useRef({ elements, appState, files, boardId, boardName });
+  const skipNextOnChangeRef = useRef(false);
+  const onChangePendingRef = useRef<{ els: unknown[]; st: Record<string, unknown>; f: Record<string, unknown> | null } | null>(null);
+  const onChangeRafRef = useRef<number | null>(null);
   sceneRef.current = { elements, appState, files, boardId, boardName };
 
   const currentScene = useMemo(
@@ -211,8 +214,18 @@ export default function WhiteboardPage() {
     setIsMobile(typeof window !== "undefined" && window.innerWidth < 768);
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (onChangeRafRef.current != null) {
+        cancelAnimationFrame(onChangeRafRef.current);
+        onChangeRafRef.current = null;
+      }
+    };
+  }, []);
+
   // Update Excalidraw scene when switching boards (avoids slow remount)
   useEffect(() => {
+    skipNextOnChangeRef.current = true;
     excalidrawRef.current?.updateScene?.({
       elements: initialDataForBoard.elements,
       appState: initialDataForBoard.appState as never,
@@ -388,6 +401,7 @@ export default function WhiteboardPage() {
     setElements(el);
     setAppState(appStateNorm);
     setInitialDataForBoard((prev) => ({ ...prev, elements: el, appState: appStateNorm }));
+    skipNextOnChangeRef.current = true;
     excalidrawRef.current?.updateScene?.({ elements: el, appState: appStateNorm });
     setTemplatesOpen(false);
   }, []);
@@ -534,9 +548,25 @@ export default function WhiteboardPage() {
               initialData={initialDataForBoard as React.ComponentProps<typeof Excalidraw>["initialData"]}
               theme="dark"
               onChange={(els, st, f) => {
-                setElements([...els]);
-                setAppState(st as unknown as Record<string, unknown>);
-                setFiles(f as unknown as Record<string, unknown> | null);
+                if (skipNextOnChangeRef.current) {
+                  skipNextOnChangeRef.current = false;
+                  return;
+                }
+                const stNorm = st as unknown as Record<string, unknown>;
+                const fNorm = f as unknown as Record<string, unknown> | null;
+                onChangePendingRef.current = { els: [...els], st: stNorm, f: fNorm };
+                if (onChangeRafRef.current == null) {
+                  onChangeRafRef.current = requestAnimationFrame(() => {
+                    onChangeRafRef.current = null;
+                    const pending = onChangePendingRef.current;
+                    if (pending) {
+                      onChangePendingRef.current = null;
+                      setElements(pending.els);
+                      setAppState(pending.st);
+                      setFiles(pending.f);
+                    }
+                  });
+                }
               }}
               excalidrawAPI={(api) => { excalidrawRef.current = api as never; }}
             />

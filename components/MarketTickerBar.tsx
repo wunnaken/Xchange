@@ -1,9 +1,22 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 
 const TICKER_CACHE_KEY = "xchange-ticker-cache";
+const HEADER_TICKERS_KEY = "xchange-header-tickers";
+
+function getHeaderTickerSymbols(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(HEADER_TICKERS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((s) => typeof s === "string").slice(0, 8) : [];
+  } catch {
+    return [];
+  }
+}
 
 type Ticker = {
   id: string;
@@ -96,35 +109,42 @@ export function MarketTickerBar() {
   const [tickers, setTickers] = useState<Ticker[]>(FALLBACK_TICKERS);
   const [loading, setLoading] = useState(false);
 
+  const fetchTickers = useCallback(async () => {
+    const symbols = getHeaderTickerSymbols();
+    const url = symbols.length > 0 ? `/api/market-tickers?symbols=${encodeURIComponent(symbols.join(","))}` : "/api/market-tickers";
+    try {
+      const res = await fetch(url, { cache: "no-store" });
+      const data = await res.json();
+      const list = Array.isArray(data) ? data : [];
+      if (list.length > 0) {
+        setTickers(list);
+        setCachedTickers(list);
+      } else {
+        const cached = getCachedTickers();
+        setTickers(cached.length > 0 ? cached : FALLBACK_TICKERS);
+      }
+    } catch {
+      const cached = getCachedTickers();
+      setTickers(cached.length > 0 ? cached : FALLBACK_TICKERS);
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
-    async function fetchTickers() {
-      try {
-        const res = await fetch("/api/market-tickers", { cache: "no-store" });
-        if (cancelled) return;
-        const data = await res.json();
-        const list = Array.isArray(data) ? data : [];
-        if (list.length > 0) {
-          setTickers(list);
-          setCachedTickers(list);
-        } else {
-          const cached = getCachedTickers();
-          setTickers(cached.length > 0 ? cached : FALLBACK_TICKERS);
-        }
-      } catch {
-        if (!cancelled) {
-          const cached = getCachedTickers();
-          setTickers(cached.length > 0 ? cached : FALLBACK_TICKERS);
-        }
-      }
-    }
-    fetchTickers();
+    (async () => {
+      setLoading(true);
+      await fetchTickers();
+      if (!cancelled) setLoading(false);
+    })();
     const interval = setInterval(fetchTickers, 60 * 1000);
+    const onCustomChange = () => fetchTickers();
+    window.addEventListener("xchange-header-tickers-changed" as any, onCustomChange);
     return () => {
       cancelled = true;
       clearInterval(interval);
+      window.removeEventListener("xchange-header-tickers-changed" as any, onCustomChange);
     };
-  }, []);
+  }, [fetchTickers]);
 
   if (loading && tickers.length === 0) {
     return <TickerSkeleton />;

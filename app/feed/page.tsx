@@ -16,6 +16,47 @@ import { StreakDetailModal } from "../../components/StreakDetailModal";
 import { useToast } from "../../components/ToastContext";
 import { triggerConfetti } from "../../lib/confetti";
 import { addXPFromPost, addXPFromReaction } from "../../lib/engagement/xp";
+import { VerifiedBadge } from "../../components/VerifiedBadge";
+import { isVerified } from "../../lib/verified";
+
+const VERIFIED_TOOLTIP_SEEN_KEY = "xchange-verified-badge-tooltip-seen";
+
+function VerifiedBadgeWithTooltip() {
+  const { user } = useAuth();
+  const [showTooltip, setShowTooltip] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isUserVerified = isVerified(user?.email);
+
+  const onMouseEnter = useCallback(() => {
+    if (isUserVerified) return;
+    if (typeof sessionStorage !== "undefined" && sessionStorage.getItem(VERIFIED_TOOLTIP_SEEN_KEY)) return;
+    setShowTooltip(true);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      setShowTooltip(false);
+      try { sessionStorage.setItem(VERIFIED_TOOLTIP_SEEN_KEY, "1"); } catch {}
+      timerRef.current = null;
+    }, 3000);
+  }, [isUserVerified]);
+
+  const onMouseLeave = useCallback(() => {
+    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+    setShowTooltip(false);
+  }, []);
+
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+
+  return (
+    <span className="relative inline-flex" onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave}>
+      <VerifiedBadge size={16} />
+      {showTooltip && !isUserVerified && (
+        <span className="absolute left-0 top-full z-50 mt-1 max-w-[200px] rounded-lg border border-white/20 bg-[#0F1520] px-2.5 py-1.5 text-xs text-zinc-200 shadow-xl">
+          This trader is Verified ✓ Get your own badge for $9/month
+        </span>
+      )}
+    </span>
+  );
+}
 
 function isOnlineStable(handle: string): boolean {
   let h = 0;
@@ -67,7 +108,7 @@ const REACTIONS: { key: ReactionKey; label: string; emoji: string }[] = [
 
 type FeedPost = {
   id: string;
-  author: { name: string; handle: string; avatar: string | null };
+  author: { name: string; handle: string; avatar: string | null; verified?: boolean };
   content: string;
   timestamp: string;
   image?: string | null;
@@ -92,7 +133,7 @@ export default function FeedPage() {
   const [showBriefing, setShowBriefing] = useState(false);
   const [streakData, setStreakData] = useState(() => loadStreaks());
   const [showStreakModal, setShowStreakModal] = useState(false);
-  const [liveCount, setLiveCount] = useState(() => 500 + Math.floor(Math.random() * 1501));
+  const [liveCount, setLiveCount] = useState(1200);
   const [trendingTickers, setTrendingTickers] = useState<TrendingTicker[]>([]);
   const [trendingTickersLoading, setTrendingTickersLoading] = useState(true);
   const [trendingBannerDismissed, setTrendingBannerDismissed] = useState(false);
@@ -137,6 +178,9 @@ export default function FeedPage() {
     }
   }, []);
 
+  useEffect(() => {
+    setLiveCount(500 + Math.floor(Math.random() * 1501));
+  }, []);
   useEffect(() => {
     const t = setInterval(() => {
       setLiveCount((c) => Math.max(500, Math.min(2000, c + Math.floor((Math.random() - 0.5) * 80))));
@@ -343,7 +387,8 @@ export default function FeedPage() {
       if (!res.ok) return;
       const data = await res.json();
       if (data.post) {
-        setPosts((prev) => [data.post, ...prev]);
+        const postWithVerified = { ...data.post, author: { ...data.post.author, verified: isVerified(user?.email) } };
+        setPosts((prev) => [postWithVerified, ...prev]);
         setReactionCounts((prev) => ({ ...prev, [data.post.id]: data.reactionCounts ?? {} }));
         setUserReactions((prev) => ({ ...prev, [data.post.id]: data.userReactions ?? {} }));
         addXPFromPost();
@@ -353,21 +398,33 @@ export default function FeedPage() {
     }
   };
 
-  const POOL_POSTS: FeedPost[] = Array.from({ length: 20 }, (_, i) => ({
-    id: `pool-${i}`,
-    author: { name: ["Alex R.", "Sam C.", "Jordan L.", "Morgan T.", "Casey K."][i % 5], handle: ["alex_r", "sam_c", "jordan_lee", "morgan_t", "casey_k"][i % 5], avatar: null },
-    content: ["Adding NVDA on dips.", "SPY holding 450 support.", "Macro: watching CPI tomorrow.", "Crypto flow improving.", "Long USD/JPY here."][i % 5] + " " + (i > 5 ? "Follow for more ideas." : ""),
-    timestamp: new Date(Date.now() - i * 3600000).toISOString(),
-    comments: i % 3,
-    reactions: undefined,
-  }));
+  const POOL_POSTS: FeedPost[] = Array.from({ length: 20 }, (_, i) => {
+    const handles = ["alex_r", "sam_c", "jordan_lee", "morgan_t", "casey_k"];
+    const verified = i % 5 === 0 || i % 5 === 1;
+    return {
+      id: `pool-${i}`,
+      author: { name: ["Alex R.", "Sam C.", "Jordan L.", "Morgan T.", "Casey K."][i % 5], handle: handles[i % 5], avatar: null, verified },
+      content: ["Adding NVDA on dips.", "SPY holding 450 support.", "Macro: watching CPI tomorrow.", "Crypto flow improving.", "Long USD/JPY here."][i % 5] + " " + (i > 5 ? "Follow for more ideas." : ""),
+      timestamp: new Date(Date.now() - i * 3600000).toISOString(),
+      comments: i % 3,
+      reactions: undefined,
+    };
+  });
 
   const loadMorePosts = useCallback(async () => {
     if (loadingMore || !hasMore) return;
     setLoadingMore(true);
     try {
       const res = await fetch(`/api/posts?limit=5&offset=${posts.length}`, { credentials: "include" });
-      const data = await res.json();
+      const raw = await res.text();
+      let data: { posts?: unknown[]; reactionCounts?: Record<string, unknown>; userReactions?: Record<string, unknown> } = {};
+      if (raw.trim()) {
+        try {
+          data = JSON.parse(raw);
+        } catch {
+          data = {};
+        }
+      }
       if (res.ok && Array.isArray(data.posts) && data.posts.length > 0) {
         setPosts((prev) => [...prev, ...data.posts]);
         setReactionCounts((prev) => ({ ...prev, ...(data.reactionCounts ?? {}) }));
@@ -592,11 +649,17 @@ export default function FeedPage() {
               ) : posts.length === 0 ? (
                 <p className="py-8 text-center text-sm text-zinc-500">No posts yet. Be the first to post!</p>
               ) : (
-              posts.map((post) => (
+              [...posts]
+                .sort((a, b) => ((b.author.verified ? 1 : 0) - (a.author.verified ? 1 : 0)))
+                .map((post) => (
                 <article
                   key={post.id}
                   className="animate-[fadeIn_0.35s_ease-out] rounded-2xl border border-white/10 p-4 transition-colors duration-200 hover:border-white/15"
-                  style={{ backgroundColor: CARD_BG_VAR }}
+                  style={{
+                    backgroundColor: CARD_BG_VAR,
+                    borderLeftWidth: post.author.verified ? 3 : undefined,
+                    borderLeftColor: post.author.verified ? "#3B82F6" : undefined,
+                  }}
                 >
                   <div className="flex gap-3">
                     <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-white/10 text-sm font-semibold text-zinc-400">
@@ -609,12 +672,18 @@ export default function FeedPage() {
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-x-2 gap-y-0">
                         <span className="font-semibold text-zinc-100">{post.author.name}</span>
+                        {post.author.verified && (
+                          <VerifiedBadgeWithTooltip />
+                        )}
                         <span className="text-xs text-zinc-500">@{post.author.handle}</span>
                         <span className="text-xs text-zinc-500">·</span>
                         <time className="text-xs text-zinc-500" dateTime={post.timestamp}>
                           {formatTime(post.timestamp)}
                         </time>
                       </div>
+                      {post.author.verified && (
+                        <p className="mt-0.5 text-xs font-medium" style={{ color: "#3B82F6" }}>Verified Trader</p>
+                      )}
                       <p className="mt-1.5 whitespace-pre-wrap text-sm text-zinc-300">{post.content}</p>
                       {post.image && (
                         <div className="mt-3 overflow-hidden rounded-xl border border-white/10">
@@ -661,8 +730,7 @@ export default function FeedPage() {
                     </div>
                   </div>
                 </article>
-              ))
-              )}
+              )))}
             </div>
 
             <div ref={feedBottomRef} className="mt-6 min-h-[80px]">
@@ -785,6 +853,18 @@ export default function FeedPage() {
                 ))}
               </ul>
             </section>
+
+            {/* Verified Trader sidebar prompt — only for non-verified */}
+            {!isVerified(user?.email) && (
+              <section
+                className="rounded-2xl border border-[#3B82F6]/30 bg-[#3B82F6]/5 p-4"
+              >
+                <p className="font-medium text-white">✓ Verified Trader</p>
+                <p className="mt-1 text-xs text-zinc-400">Stand out in the feed with a blue checkmark and performance stats.</p>
+                <p className="mt-1 text-xs text-zinc-500">$9/mo · 7-day free trial</p>
+                <Link href="/verify" className="mt-3 inline-block rounded-full bg-[#3B82F6] px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-[#3B82F6]/90">Get Verified →</Link>
+              </section>
+            )}
 
             {/* Market Mood */}
             <section

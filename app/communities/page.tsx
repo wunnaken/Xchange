@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "../../components/AuthContext";
 import { useFocusTrap } from "../../components/useFocusTrap";
+import { VerifiedBadge } from "../../components/VerifiedBadge";
+import { isVerified } from "../../lib/verified";
 
 const INTRO_DISMISSED_KEY = "xchange_communities_intro_dismissed";
 
@@ -183,7 +185,7 @@ export default function CommunitiesPage() {
         {/* Page Header */}
         <div className="mb-10 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div>
-            <p className="text-xs font-medium uppercase tracking-[0.25em] text-[#11c60f]/80">
+            <p className="text-xs font-medium uppercase tracking-[0.25em]" style={{ color: "var(--accent-color)", opacity: 0.8 }}>
               Smart Communities
             </p>
             <h1 className="mt-3 text-3xl font-semibold tracking-tight text-zinc-50 sm:text-4xl">
@@ -275,6 +277,39 @@ export default function CommunitiesPage() {
                 🏆 Leaderboard
               </Link>
             </div>
+          </div>
+        </section>
+
+        {/* Verified Only section */}
+        <section className="mb-8">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-[#3B82F6]">🔒 Verified Trader Rooms</h2>
+          <p className="mt-1 text-xs text-zinc-400">Exclusive communities for verified traders only.</p>
+          <div className="mt-4 grid gap-4 sm:grid-cols-3">
+            {[
+              { id: "pro-desk", name: "Pro Desk Flow", desc: "Institutional grade flow and ideas", members: "Verified traders only" },
+              { id: "macro-alpha", name: "Verified Macro Alpha", desc: "High conviction macro plays", members: "Verified traders only" },
+              { id: "options-elite", name: "Options Elite", desc: "Professional options strategies", members: "Verified traders only" },
+            ].map((room) => {
+              const verified = isVerified(user?.email);
+              return (
+                <article key={room.id} className={`relative overflow-hidden rounded-2xl border border-white/5 p-4 ${verified ? "border-[#3B82F6]/30 bg-gradient-to-br from-[#3B82F6]/10 to-white/[0.02]" : "bg-[#050713]"}`}>
+                  {!verified && (
+                    <div className="absolute inset-0 z-10 bg-black/50 backdrop-blur-sm" aria-hidden />
+                  )}
+                  <div className={!verified ? "blur-[2px] select-none" : ""}>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-semibold text-zinc-50">{room.name}</h3>
+                      <VerifiedBadge size={16} />
+                    </div>
+                    <p className="mt-1 text-xs text-zinc-400">{room.desc}</p>
+                    <p className="mt-1 text-[11px] text-zinc-500">Members: {room.members}</p>
+                    {verified && (
+                      <button type="button" className="mt-3 w-full rounded-full bg-[#22c55e] px-3 py-1.5 text-xs font-medium text-[#020308] hover:bg-[#22c55e]/90">Enter Room</button>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
           </div>
         </section>
 
@@ -511,7 +546,7 @@ export default function CommunitiesPage() {
             )}
             <div className="mb-4 flex items-center justify-between text-[11px] text-zinc-300">
               <div>
-                <p className="text-[10px] uppercase tracking-[0.22em] text-[#11c60f]/80">
+                <p className="text-[10px] uppercase tracking-[0.22em]" style={{ color: "var(--accent-color)", opacity: 0.8 }}>
                   Room preview
                 </p>
                 <h2 className="mt-1 text-sm font-semibold text-zinc-50">

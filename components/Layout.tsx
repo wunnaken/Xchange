@@ -11,6 +11,8 @@ import type { User } from "./AuthContext";
 import { getSidebarPrefs, saveSidebarPrefs, type SidebarPrefs } from "../lib/sidebar-preferences";
 import { hasBeenWelcomed } from "../lib/briefing";
 import { SiteFooter } from "./SiteFooter";
+import { VerifiedBadge } from "./VerifiedBadge";
+import { isVerified } from "../lib/verified";
 import { useLoginStreakTick } from "./StreakProvider";
 
 const SIDEBAR_WIDTH = 220;
@@ -26,6 +28,7 @@ const MAIN_NAV: { href: string; label: string }[] = [
   { href: "/ceos", label: "CEOs" },
   { href: "/calendar", label: "Calendar" },
   { href: "/journal", label: "Journal" },
+  { href: "/datahub", label: "DataHub" },
   { href: "/watchlist", label: "My Watchlist" },
   { href: "/ai", label: "Workspace" },
 ];
@@ -203,6 +206,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   const [draggingHref, setDraggingHref] = useState<string | null>(null);
   const [showWelcomeOverlay, setShowWelcomeOverlay] = useState(false);
+  const [verified, setVerified] = useState(false);
+  useEffect(() => {
+    setVerified(isVerified(user?.email));
+  }, [pathname, user?.email]);
 
   useEffect(() => {
     if (!user) return;
@@ -431,6 +438,26 @@ export function Layout({ children }: { children: React.ReactNode }) {
               onClick={() => setSidebarOpen(false)}
             />
           ))}
+          {verified ? (
+            <div className={`group flex min-w-0 flex-1 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-zinc-400 ${collapsed ? "justify-center px-2" : ""}`} title="Verified Trader">
+              <span className="relative flex h-5 w-5 flex-shrink-0 items-center justify-center">
+                <VerifiedBadge size={16} />
+              </span>
+              {!collapsed && <span className="truncate">Verified Trader</span>}
+            </div>
+          ) : (
+            <Link
+              href="/verify"
+              onClick={() => setSidebarOpen(false)}
+              className={`group flex min-w-0 flex-1 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-zinc-400 transition-colors duration-200 hover:bg-white/5 hover:text-[var(--accent-color)] ${collapsed ? "justify-center px-2" : ""}`}
+              title={collapsed ? "Get Verified" : undefined}
+            >
+              <span className="relative flex h-5 w-5 flex-shrink-0 items-center justify-center">
+                <span className="h-1.5 w-1.5 rounded-full bg-zinc-500 opacity-40 transition-transform transition-opacity duration-200 group-hover:scale-125 group-hover:opacity-100 group-hover:bg-[var(--accent-color)]" />
+              </span>
+              {!collapsed && <span className="truncate transition-transform duration-150 group-hover:translate-x-0.5 group-hover:scale-105">Get Verified</span>}
+            </Link>
+          )}
         </div>
       </aside>
 
@@ -440,19 +467,20 @@ export function Layout({ children }: { children: React.ReactNode }) {
         style={{ borderColor: "var(--app-border)", backgroundColor: "var(--app-navbar-bg)", color: "var(--app-navbar-text)" }}
         role="banner"
       >
-        <button
-          type="button"
-          onClick={() => setSidebarOpen((o) => !o)}
-          className="rounded p-2 text-zinc-400 transition-colors hover:bg-white/5 hover:text-zinc-200"
-          aria-label={sidebarOpen ? "Close menu" : "Open menu"}
-        >
-          <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-          </svg>
-        </button>
-
-        <div className="min-w-0 flex-1">
-          <MarketTickerBar />
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <Link
+            href="/watchlist"
+            className="flex shrink-0 items-center justify-center rounded p-2 text-zinc-400 transition-colors hover:bg-white/5 hover:text-[var(--accent-color)]"
+            aria-label="My Watchlist"
+            title="My Watchlist"
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+            </svg>
+          </Link>
+          <div className="min-w-0 flex-1">
+            <MarketTickerBar />
+          </div>
         </div>
 
         <div className="flex shrink-0 items-center gap-1">

@@ -8,6 +8,9 @@ import { useAuth } from "../../components/AuthContext";
 import { isSpecialAccount } from "../../lib/special-account";
 import { getInitials as getSuggestedInitials } from "../../lib/suggested-people";
 import { fetchWatchlist, type WatchlistItem } from "../../lib/watchlist-api";
+import { getPriceAlerts, getAlertsForTicker, isNearTrigger } from "../../lib/price-alerts";
+import { useLivePrices } from "../../lib/hooks/useLivePrice";
+import { PriceDisplay } from "../../components/PriceDisplay";
 import { getCachedBriefing, getBriefingDate, setBriefingSeen } from "../../lib/briefing";
 import { MorningBriefing } from "../../components/MorningBriefing";
 import type { User } from "../../components/AuthContext";
@@ -129,7 +132,8 @@ export default function FeedPage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [watchlistLoading, setWatchlistLoading] = useState(true);
-  const [watchlistQuotes, setWatchlistQuotes] = useState<Record<string, { price: number; changePercent: number }>>({});
+  const watchlistSymbols = watchlist.map((i) => i.ticker);
+  const watchlistQuotes = useLivePrices(watchlistSymbols);
   type FollowedProfile = { id: string; name: string; username: string };
   const [followedProfiles, setFollowedProfiles] = useState<FollowedProfile[]>([]);
   const [showBriefing, setShowBriefing] = useState(false);
@@ -138,6 +142,8 @@ export default function FeedPage() {
   const [liveCount, setLiveCount] = useState(1200);
   const [trendingTickers, setTrendingTickers] = useState<TrendingTicker[]>([]);
   const [trendingTickersLoading, setTrendingTickersLoading] = useState(true);
+  const trendingSymbols = trendingTickers.map((t) => (t.symbol ?? "").toUpperCase()).filter(Boolean);
+  const liveTrending = useLivePrices(trendingSymbols.length > 0 ? trendingSymbols : ["SPY", "QQQ", "BTC", "ETH", "GLD", "USO"]);
   const [trendingBannerDismissed, setTrendingBannerDismissed] = useState(false);
   const [trendingBannerMessage, setTrendingBannerMessage] = useState<{ ticker: string; pct: number } | null>(null);
   const [newPostsCount, setNewPostsCount] = useState(0);
@@ -323,25 +329,6 @@ export default function FeedPage() {
     };
   }, [pathname]);
 
-  const watchlistTickers = watchlist.map((i) => i.ticker).sort().join(",");
-  useEffect(() => {
-    if (watchlist.length === 0) return;
-    let cancelled = false;
-    const quotes: Record<string, { price: number; changePercent: number }> = {};
-    Promise.all(
-      watchlist.slice(0, 15).map((item) =>
-        fetch(`/api/ticker-quote?ticker=${encodeURIComponent(item.ticker)}`, { cache: "no-store" })
-          .then((r) => r.json())
-          .then((d) => {
-            if (!cancelled && d?.price != null) quotes[item.ticker] = { price: d.price, changePercent: d.changePercent ?? 0 };
-          })
-          .catch(() => {})
-      )
-    ).then(() => {
-      if (!cancelled) setWatchlistQuotes((prev) => ({ ...prev, ...quotes }));
-    });
-    return () => { cancelled = true; };
-  }, [watchlistTickers, watchlist.length]);
 
   const handleReaction = async (postId: string, key: ReactionKey) => {
     const alreadyReacted = userReactions[postId]?.[key];
@@ -771,32 +758,61 @@ export default function FeedPage() {
                   No assets added yet. Search for a stock or crypto to add to your watchlist.
                 </p>
               ) : (
-                <ul className="mt-3 space-y-2">
-                  {watchlist.map((item) => {
-                    const q = watchlistQuotes[item.ticker];
-                    const price = item.price ?? (q?.price != null ? (q.price >= 1 ? q.price.toFixed(2) : q.price.toFixed(4)) : null);
-                    const ch = item.change ?? q?.changePercent;
+                <>
+                  <ul className="mt-3 space-y-2">
+                    {watchlist.map((item) => {
+                      const q = watchlistQuotes[item.ticker];
+                      const price = item.price ?? (q?.price != null ? (q.price >= 1 ? q.price.toFixed(2) : q.price.toFixed(4)) : null);
+                      const ch = item.change ?? q?.changePercent;
+                      const tickerAlerts = getAlertsForTicker(item.ticker).filter((a) => a.status === "active");
+                      const alertTarget = tickerAlerts[0]?.targetPrice;
+                      return (
+                        <li key={item.ticker}>
+                          <Link
+                            href={`/search/${encodeURIComponent(item.ticker)}`}
+                            className="flex items-center justify-between gap-2 rounded-lg px-3 py-2 transition-colors duration-200 hover:bg-white/5"
+                          >
+                            <span className="font-medium text-zinc-200">{item.ticker}</span>
+                            <span className="shrink-0 text-right text-xs">
+                              {price != null && <span className="text-zinc-400">${price}</span>}
+                              {ch != null && (
+                                <span className={ch >= 0 ? "ml-1.5 text-emerald-400" : "ml-1.5 text-red-400"}>
+                                  {ch >= 0 ? "+" : ""}{typeof ch === "number" ? ch.toFixed(2) : ch}%
+                                </span>
+                              )}
+                              {price == null && ch == null && <span className="text-zinc-500">—</span>}
+                              {alertTarget != null && (
+                                <span className="ml-1.5 inline-flex items-center gap-0.5 text-zinc-500" title="Price alert">
+                                  <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
+                                  ${typeof alertTarget === "number" ? alertTarget.toFixed(2) : alertTarget}
+                                </span>
+                              )}
+                            </span>
+                          </Link>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  {(() => {
+                    const activeAlerts = getPriceAlerts().filter((a) => a.status === "active");
+                    const near = activeAlerts.find((a) => {
+                      const p = watchlistQuotes[a.ticker]?.price;
+                      return p != null && isNearTrigger(a, p);
+                    });
+                    if (!near) return null;
+                    const p = watchlistQuotes[near.ticker]?.price;
+                    const pct = p != null && near.targetPrice > 0 ? Math.abs(((near.targetPrice - p) / p) * 100).toFixed(1) : "?";
                     return (
-                      <li key={item.ticker}>
-                        <Link
-                          href={`/search/${encodeURIComponent(item.ticker)}`}
-                          className="flex items-center justify-between gap-2 rounded-lg px-3 py-2 transition-colors duration-200 hover:bg-white/5"
-                        >
-                          <span className="font-medium text-zinc-200">{item.ticker}</span>
-                          <span className="shrink-0 text-right text-xs">
-                            {price != null && <span className="text-zinc-400">${price}</span>}
-                            {ch != null && (
-                              <span className={ch >= 0 ? "ml-1.5 text-emerald-400" : "ml-1.5 text-red-400"}>
-                                {ch >= 0 ? "+" : ""}{typeof ch === "number" ? ch.toFixed(2) : ch}%
-                              </span>
-                            )}
-                            {price == null && ch == null && <span className="text-zinc-500">—</span>}
-                          </span>
-                        </Link>
-                      </li>
+                      <Link
+                        href="/watchlist"
+                        className="mt-2 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+                      >
+                        <svg className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
+                        Alert: {near.ticker} within {pct}% of ${near.targetPrice >= 1 ? near.targetPrice.toFixed(2) : near.targetPrice.toFixed(4)}
+                      </Link>
                     );
-                  })}
-                </ul>
+                  })()}
+                </>
               )}
             </section>
 
@@ -817,22 +833,39 @@ export default function FeedPage() {
                 </ul>
               ) : trendingTickers.length > 0 ? (
                 <ul className="mt-3 space-y-2.5">
-                  {trendingTickers.map((t) => (
-                    <li key={t.symbol}>
-                      <Link
-                        href={`/search/${encodeURIComponent(t.symbol)}`}
-                        className="flex items-center justify-between rounded-lg px-3 py-2 transition-colors duration-200 hover:bg-white/5"
-                      >
-                        <div>
-                          <span className="font-medium text-zinc-200">{t.symbol}</span>
-                          <span className="ml-2 text-xs text-zinc-500">{t.name}</span>
-                        </div>
-                        <span className={t.changePercent >= 0 ? "text-emerald-400" : "text-red-400"}>
-                          {t.changePercent >= 0 ? "+" : ""}{t.changePercent.toFixed(2)}%
-                        </span>
-                      </Link>
-                    </li>
-                  ))}
+                  {trendingTickers.map((t) => {
+                    const sym = t.symbol?.toUpperCase() ?? t.symbol;
+                    const live = liveTrending[sym];
+                    const pct = live?.changePercent ?? t.changePercent ?? 0;
+                    const price = live?.price ?? (typeof t.price === "number" ? t.price : null);
+                    return (
+                      <li key={t.symbol}>
+                        <Link
+                          href={`/search/${encodeURIComponent(t.symbol)}`}
+                          className="flex items-center justify-between rounded-lg px-3 py-2 transition-colors duration-200 hover:bg-white/5"
+                        >
+                          <div>
+                            <span className="font-medium text-zinc-200">{t.symbol}</span>
+                            <span className="ml-2 text-xs text-zinc-500">{t.name}</span>
+                          </div>
+                          {price != null ? (
+                            <PriceDisplay
+                              price={price}
+                              change={live?.change ?? (price * (pct / 100))}
+                              changePercent={live?.changePercent ?? pct}
+                              symbol={sym}
+                              format="compact"
+                              showChange={true}
+                            />
+                          ) : (
+                            <span className={pct >= 0 ? "text-emerald-400" : "text-red-400"}>
+                              {pct >= 0 ? "+" : ""}{Number(pct).toFixed(2)}%
+                            </span>
+                          )}
+                        </Link>
+                      </li>
+                    );
+                  })}
                 </ul>
               ) : (
                 <p className="mt-3 text-xs text-zinc-500">Prices temporarily unavailable</p>
@@ -920,32 +953,61 @@ export default function FeedPage() {
                 No assets added yet. Search for a stock or crypto to add to your watchlist.
               </p>
             ) : (
-              <ul className="mt-3 space-y-2">
-                {watchlist.map((item) => {
-                  const q = watchlistQuotes[item.ticker];
-                  const price = item.price ?? (q?.price != null ? (q.price >= 1 ? q.price.toFixed(2) : q.price.toFixed(4)) : null);
-                  const ch = item.change ?? q?.changePercent;
+              <>
+                <ul className="mt-3 space-y-2">
+                  {watchlist.map((item) => {
+                    const q = watchlistQuotes[item.ticker];
+                    const price = item.price ?? (q?.price != null ? (q.price >= 1 ? q.price.toFixed(2) : q.price.toFixed(4)) : null);
+                    const ch = item.change ?? q?.changePercent;
+                    const tickerAlerts = getAlertsForTicker(item.ticker).filter((a) => a.status === "active");
+                    const alertTarget = tickerAlerts[0]?.targetPrice;
+                    return (
+                      <li key={item.ticker}>
+                        <Link
+                          href={`/search/${encodeURIComponent(item.ticker)}`}
+                          className="flex justify-between gap-2 rounded-lg px-3 py-2"
+                        >
+                          <span className="font-medium text-zinc-200">{item.ticker}</span>
+                          <span className="shrink-0 text-right text-xs">
+                            {price != null && <span className="text-zinc-400">${price}</span>}
+                            {ch != null && (
+                              <span className={ch >= 0 ? "ml-1.5 text-emerald-400" : "ml-1.5 text-red-400"}>
+                                {ch >= 0 ? "+" : ""}{typeof ch === "number" ? ch.toFixed(2) : ch}%
+                              </span>
+                            )}
+                            {price == null && ch == null && <span className="text-zinc-500">—</span>}
+                            {alertTarget != null && (
+                              <span className="ml-1.5 inline-flex items-center gap-0.5 text-zinc-500">
+                                <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
+                                ${typeof alertTarget === "number" ? alertTarget.toFixed(2) : alertTarget}
+                              </span>
+                            )}
+                          </span>
+                        </Link>
+                      </li>
+                    );
+                  })}
+                </ul>
+                {(() => {
+                  const activeAlerts = getPriceAlerts().filter((a) => a.status === "active");
+                  const near = activeAlerts.find((a) => {
+                    const p = watchlistQuotes[a.ticker]?.price;
+                    return p != null && isNearTrigger(a, p);
+                  });
+                  if (!near) return null;
+                  const p = watchlistQuotes[near.ticker]?.price;
+                  const pct = p != null && near.targetPrice > 0 ? Math.abs(((near.targetPrice - p) / p) * 100).toFixed(1) : "?";
                   return (
-                    <li key={item.ticker}>
-                      <Link
-                        href={`/search/${encodeURIComponent(item.ticker)}`}
-                        className="flex justify-between gap-2 rounded-lg px-3 py-2"
-                      >
-                        <span className="font-medium text-zinc-200">{item.ticker}</span>
-                        <span className="shrink-0 text-right text-xs">
-                          {price != null && <span className="text-zinc-400">${price}</span>}
-                          {ch != null && (
-                            <span className={ch >= 0 ? "ml-1.5 text-emerald-400" : "ml-1.5 text-red-400"}>
-                              {ch >= 0 ? "+" : ""}{typeof ch === "number" ? ch.toFixed(2) : ch}%
-                            </span>
-                          )}
-                          {price == null && ch == null && <span className="text-zinc-500">—</span>}
-                        </span>
-                      </Link>
-                    </li>
+                    <Link
+                      href="/watchlist"
+                      className="mt-2 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+                    >
+                      <svg className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
+                      Alert: {near.ticker} within {pct}% of ${near.targetPrice >= 1 ? near.targetPrice.toFixed(2) : near.targetPrice.toFixed(4)}
+                    </Link>
                   );
-                })}
-              </ul>
+                })()}
+              </>
             )}
           </section>
           <section

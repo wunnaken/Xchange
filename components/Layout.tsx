@@ -15,6 +15,8 @@ import { VerifiedBadge } from "./VerifiedBadge";
 import { isVerified } from "../lib/verified";
 import { useLoginStreakTick } from "./StreakProvider";
 import { getPredictNotifications, markPredictNotificationsRead } from "../lib/predict";
+import { getInAppNotifications } from "../lib/price-alerts";
+import { usePriceContext } from "../lib/price-context";
 import { getBrokerConnection } from "../lib/broker-connection";
 
 const SIDEBAR_WIDTH = 220;
@@ -169,10 +171,25 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const [profileOpen, setProfileOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [hiddenPanelOpen, setHiddenPanelOpen] = useState(false);
+  const [inAppNotifs, setInAppNotifs] = useState<ReturnType<typeof getInAppNotifications>>([]);
+  const [notificationCount, setNotificationCount] = useState(0);
   const profileRef = useRef<HTMLDivElement>(null);
   const notificationsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setInAppNotifs(getInAppNotifications());
+    const onChange = () => setInAppNotifs(getInAppNotifications());
+    window.addEventListener("xchange-in-app-notifications-changed", onChange);
+    return () => window.removeEventListener("xchange-in-app-notifications-changed", onChange);
+  }, []);
+
+  useEffect(() => {
+    const n = inAppNotifs.length + getPredictNotifications().length;
+    setNotificationCount(Math.min(99, n) || 4);
+  }, [inAppNotifs.length]);
   const hiddenPanelRef = useRef<HTMLDivElement>(null);
 
+  const { connectionState } = usePriceContext();
   const [customizeMode, setCustomizeMode] = useState(false);
   const [prefs, setPrefs] = useState<SidebarPrefs>(() => ({
     order: [...MAIN_NAV_HREFS],
@@ -487,8 +504,35 @@ export function Layout({ children }: { children: React.ReactNode }) {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
             </svg>
           </Link>
-          <div className="min-w-0 flex-1">
+          <div className="min-w-0 flex-1 flex items-center gap-1.5">
             <MarketTickerBar />
+            <span
+              className="shrink-0 rounded-full p-1"
+              title={
+                connectionState === "connected"
+                  ? "Live prices via Finnhub WebSocket"
+                  : connectionState === "connecting"
+                    ? "Reconnecting…"
+                    : "Using cached prices"
+              }
+              aria-label={
+                connectionState === "connected"
+                  ? "Live prices"
+                  : connectionState === "connecting"
+                    ? "Reconnecting"
+                    : "Cached prices"
+              }
+            >
+              <span
+                className={`block h-1.5 w-1.5 rounded-full ${
+                  connectionState === "connected"
+                    ? "bg-emerald-400"
+                    : connectionState === "connecting"
+                      ? "bg-amber-400 animate-pulse"
+                      : "bg-red-500/80"
+                }`}
+              />
+            </span>
           </div>
         </div>
 
@@ -505,8 +549,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
               <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
               </svg>
-              <span className="absolute -right-0.5 -top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent-color)] text-[10px] font-bold text-[#020308] ring-2 ring-[#0A0E1A]">
-                4
+              <span className="absolute -right-0.5 -top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent-color)] text-[10px] font-bold text-[#020308] ring-2 ring-[#0A0E1A]" suppressHydrationWarning>
+                {notificationCount}
               </span>
             </button>
             {notificationsOpen && (
@@ -523,6 +567,20 @@ export function Layout({ children }: { children: React.ReactNode }) {
                   Mark all as read
                 </button>
                 <div className="my-1 h-px bg-white/10" />
+                {inAppNotifs.length > 0 && (
+                  <>
+                    {inAppNotifs.slice(0, 5).map((n) => (
+                      <Link key={n.id} href={n.link} onClick={() => setNotificationsOpen(false)} className="flex items-start gap-3 px-4 py-2.5 hover:bg-white/5">
+                        <span className="mt-0.5 h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
+                        <div>
+                          <p className="text-sm font-medium text-zinc-200">{n.message}</p>
+                          <p className="text-xs text-zinc-500">{new Date(n.time).toLocaleString()}</p>
+                        </div>
+                      </Link>
+                    ))}
+                    <div className="my-1 h-px bg-white/10" />
+                  </>
+                )}
                 {typeof window !== "undefined" && getPredictNotifications().length > 0 && (
                   <>
                     {getPredictNotifications().slice(0, 4).map((n) => (

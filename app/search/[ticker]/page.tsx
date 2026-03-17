@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AnalyzeTickerResponse } from "../../api/analyze-ticker/route";
 import {
   addToWatchlistApi,
@@ -10,7 +10,12 @@ import {
   isTickerInWatchlist,
   removeFromWatchlistApi,
 } from "../../../lib/watchlist-api";
+import { getAlertForTicker } from "../../../lib/price-alerts";
+import { PriceAlertModal } from "../../../components/PriceAlertModal";
 import { useToast } from "../../../components/ToastContext";
+import { useLivePrice } from "../../../lib/hooks/useLivePrice";
+import { usePriceContext } from "../../../lib/price-context";
+import { PriceDisplay } from "../../../components/PriceDisplay";
 import { CandlestickChart } from "../../../components/CandlestickChart";
 
 const CARD_BG = "#0F1520";
@@ -25,8 +30,8 @@ type ChartPoint = {
   volume: number;
 };
 
-const CHART_RANGES = ["10m", "1H", "1D", "1W", "1M"] as const;
-type ChartRangeKey = "10m" | "1h" | "1d" | "1w" | "1m";
+const CHART_RANGES = ["10m", "1H", "1D", "1W", "1M", "3M", "6M", "1Y", "5Y"] as const;
+type ChartRangeKey = "10m" | "1h" | "1d" | "1w" | "1m" | "3m" | "6m" | "1y" | "5y";
 
 function seededRandom(seed: string): number {
   let h = 0;
@@ -61,6 +66,8 @@ function TickerDataPanel({
   ticker,
   inWatchlist,
   onWatchlistChange,
+  alertForTicker,
+  onSetAlertClick,
   watchingCount,
   quote,
   quoteLoading,
@@ -68,10 +75,13 @@ function TickerDataPanel({
   chartLoading,
   chartRange,
   onChartRangeChange,
+  isLive,
 }: {
   ticker: string;
   inWatchlist: boolean;
   onWatchlistChange: () => void;
+  alertForTicker: { condition: string; targetPrice: number } | null;
+  onSetAlertClick: () => void;
   watchingCount: number;
   quote: QuoteData | null;
   quoteLoading: boolean;
@@ -79,9 +89,11 @@ function TickerDataPanel({
   chartLoading: boolean;
   chartRange: ChartRangeKey;
   onChartRangeChange: (r: ChartRangeKey) => void;
+  isLive?: boolean;
 }) {
   const name = ticker.length <= 4 ? `${ticker}` : ticker;
-  const price = quote?.price;
+  const price = quote?.price ?? null;
+  const change = quote?.change ?? null;
   const changePercent = quote?.changePercent ?? null;
   const volumeFromQuote = quote?.volume;
   const volumeFromChart = chartData.length > 0
@@ -107,12 +119,19 @@ function TickerDataPanel({
         </div>
       ) : (
         <div className="flex items-baseline gap-2">
-          <span className="text-2xl font-semibold text-zinc-100">
-            {hasPrice ? (price >= 1 ? `$${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `$${price.toFixed(4)}`) : "—"}
-          </span>
-          {hasChange && (
-            <span className={changePercent >= 0 ? "text-emerald-400" : "text-red-400"}>
-              {changePercent >= 0 ? "+" : ""}{changePercent.toFixed(2)}%
+          <PriceDisplay
+            price={price}
+            change={change}
+            changePercent={changePercent}
+            symbol={ticker}
+            showChange={true}
+            className="text-2xl font-semibold text-zinc-100"
+            priceClassName="text-2xl font-semibold text-zinc-100"
+            changeClassName={changePercent != null && changePercent >= 0 ? "text-emerald-400" : "text-red-400"}
+          />
+          {isLive && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-medium text-emerald-400">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Live
             </span>
           )}
         </div>
@@ -120,7 +139,10 @@ function TickerDataPanel({
       <div className="space-y-2">
         <div className="flex flex-wrap gap-1">
           {CHART_RANGES.map((label) => {
-            const value = (label === "1H" ? "1h" : label === "1D" ? "1d" : label === "1W" ? "1w" : label === "1M" ? "1m" : "10m") as ChartRangeKey;
+            const value = (
+              label === "1H" ? "1h" : label === "1D" ? "1d" : label === "1W" ? "1w" : label === "1M" ? "1m" :
+              label === "3M" ? "3m" : label === "6M" ? "6m" : label === "1Y" ? "1y" : label === "5Y" ? "5y" : "10m"
+            ) as ChartRangeKey;
             const active = chartRange === value;
             return (
               <button
@@ -160,30 +182,57 @@ function TickerDataPanel({
         {chartData.length > 0 && !hasVolume && (
           <p className="text-[10px] text-zinc-500">Volume not available for this range</p>
         )}
+        {chartData.length > 0 && chartData.length <= 2 && (
+          <p className="text-[10px] text-zinc-500">Limited history for this symbol/range</p>
+        )}
       </div>
-      <dl className="grid grid-cols-2 gap-3 sm:grid-cols-1">
-        {[
+      {(() => {
+        const rows = [
           { label: "Volume", value: volume != null ? (volume >= 1e6 ? `${(volume / 1e6).toFixed(1)}M` : volume >= 1e3 ? `${(volume / 1e3).toFixed(1)}K` : String(volume)) : "—" },
           { label: "High", value: high != null ? `$${high.toFixed(2)}` : "—" },
           { label: "Low", value: low != null ? `$${low.toFixed(2)}` : "—" },
-        ].map(({ label, value }) => (
-          <div key={label} className="flex justify-between rounded-lg border border-white/5 bg-white/5 px-3 py-2">
-            <dt className="text-xs text-zinc-500">{label}</dt>
-            <dd className="text-sm font-medium text-zinc-200">{value}</dd>
-          </div>
-        ))}
-      </dl>
-      <button
-        type="button"
-        onClick={onWatchlistChange}
-        className={`w-full rounded-full py-2.5 text-sm font-semibold transition-colors ${
-          inWatchlist
-            ? "border border-red-500/50 bg-red-500/10 text-red-400 hover:bg-red-500/20"
-            : "bg-[var(--accent-color)] text-[#020308] hover:opacity-90"
-        }`}
-      >
-        {inWatchlist ? "Remove from Watchlist" : "Add to Watchlist"}
-      </button>
+        ].filter((r) => r.value !== "—");
+        if (rows.length === 0) return null;
+        return (
+          <dl className="grid grid-cols-2 gap-3 sm:grid-cols-1">
+            {rows.map(({ label, value }) => (
+              <div key={label} className="flex justify-between rounded-lg border border-white/5 bg-white/5 px-3 py-2">
+                <dt className="text-xs text-zinc-500">{label}</dt>
+                <dd className="text-sm font-medium text-zinc-200">{value}</dd>
+              </div>
+            ))}
+          </dl>
+        );
+      })()}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={onWatchlistChange}
+          className={`flex-1 rounded-full py-2.5 text-sm font-semibold transition-colors ${
+            inWatchlist
+              ? "border border-red-500/50 bg-red-500/10 text-red-400 hover:bg-red-500/20"
+              : "bg-[var(--accent-color)] text-[#020308] hover:opacity-90"
+          }`}
+        >
+          {inWatchlist ? "Remove from Watchlist" : "Add to Watchlist"}
+        </button>
+        <button
+          type="button"
+          onClick={onSetAlertClick}
+          className={`flex items-center gap-2 rounded-full border py-2.5 px-4 text-sm font-medium transition-colors ${
+            alertForTicker
+              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+              : "border-white/10 bg-white/5 text-zinc-300 hover:bg-white/10"
+          }`}
+        >
+          <svg className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+          </svg>
+          {alertForTicker
+            ? `Alert: ${alertForTicker.condition === "above" ? "above" : "below"} $${alertForTicker.targetPrice >= 1 ? alertForTicker.targetPrice.toFixed(2) : alertForTicker.targetPrice.toFixed(4)}`
+            : "Set Alert"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -324,12 +373,28 @@ export default function TickerPage() {
   const [analysis, setAnalysis] = useState<AnalyzeTickerResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [quote, setQuote] = useState<QuoteData | null>(null);
-  const [quoteLoading, setQuoteLoading] = useState(true);
+  const [quoteMeta, setQuoteMeta] = useState<QuoteData | null>(null);
   const [chartData, setChartData] = useState<ChartPoint[]>([]);
   const [chartLoading, setChartLoading] = useState(true);
   const [chartRange, setChartRange] = useState<ChartRangeKey>("1d");
+  const chartRangeRef = useRef<ChartRangeKey>("1d");
   const watchingCount = useWatchingCount(ticker || "");
+  const [alertModalOpen, setAlertModalOpen] = useState(false);
+  const [alertRefresh, setAlertRefresh] = useState(0);
+  const alertForTicker = getAlertForTicker(ticker);
+  const live = useLivePrice(ticker);
+  const { isConnected } = usePriceContext();
+  const quote: QuoteData | null = live.price != null
+    ? {
+        price: live.price,
+        change: live.change,
+        changePercent: live.changePercent,
+        volume: quoteMeta?.volume ?? null,
+        high: quoteMeta?.high ?? null,
+        low: quoteMeta?.low ?? null,
+      }
+    : quoteMeta;
+  const quoteLoading = live.isLoading && live.price == null;
 
   const refreshWatchlist = useCallback(async () => {
     try {
@@ -346,11 +411,10 @@ export default function TickerPage() {
 
   useEffect(() => {
     if (!ticker) return;
-    setQuoteLoading(true);
     fetch(`/api/ticker-quote?ticker=${encodeURIComponent(ticker)}`, { cache: "no-store" })
       .then((res) => res.json())
       .then((data) => {
-        setQuote({
+        setQuoteMeta({
           price: data.price ?? null,
           change: data.change ?? null,
           changePercent: data.changePercent ?? null,
@@ -359,20 +423,33 @@ export default function TickerPage() {
           low: data.low ?? null,
         });
       })
-      .catch(() => setQuote(null))
-      .finally(() => setQuoteLoading(false));
+      .catch(() => setQuoteMeta(null));
   }, [ticker]);
 
   useEffect(() => {
     if (!ticker) return;
+    chartRangeRef.current = chartRange;
     setChartLoading(true);
-    fetch(`/api/ticker-chart?ticker=${encodeURIComponent(ticker)}&range=${chartRange}`, { cache: "no-store" })
+    const controller = new AbortController();
+    fetch(`/api/ticker-chart?ticker=${encodeURIComponent(ticker)}&range=${chartRange}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    })
       .then((res) => res.json())
       .then((data) => {
-        setChartData(Array.isArray(data?.data) ? data.data : []);
+        const next = Array.isArray(data?.data) ? data.data : [];
+        const responseRange = (data?.range ?? "").toLowerCase() as ChartRangeKey;
+        if (responseRange && responseRange !== chartRangeRef.current) return;
+        setChartData((prev) => (next.length > 0 ? next : prev));
       })
-      .catch(() => setChartData([]))
-      .finally(() => setChartLoading(false));
+      .catch((err) => {
+        if (err?.name === "AbortError") return;
+        setChartData((prev) => prev);
+      })
+      .finally(() => {
+        if (chartRangeRef.current === chartRange) setChartLoading(false);
+      });
+    return () => controller.abort();
   }, [ticker, chartRange]);
 
   useEffect(() => {
@@ -449,6 +526,8 @@ export default function TickerPage() {
               ticker={ticker}
               inWatchlist={inWatchlist}
               onWatchlistChange={handleWatchlistToggle}
+              alertForTicker={alertForTicker ? { condition: alertForTicker.condition, targetPrice: alertForTicker.targetPrice } : null}
+              onSetAlertClick={() => setAlertModalOpen(true)}
               watchingCount={watchingCount}
               quote={quote}
               quoteLoading={quoteLoading}
@@ -456,6 +535,7 @@ export default function TickerPage() {
               chartLoading={chartLoading}
               chartRange={chartRange}
               onChartRangeChange={setChartRange}
+              isLive={isConnected}
             />
           </div>
 
@@ -470,6 +550,13 @@ export default function TickerPage() {
           </div>
         </div>
       </div>
+      <PriceAlertModal
+        open={alertModalOpen}
+        onClose={() => setAlertModalOpen(false)}
+        prefilledTicker={ticker}
+        editingAlert={alertForTicker ?? undefined}
+        onSaved={() => setAlertRefresh((r) => r + 1)}
+      />
     </div>
   );
 }

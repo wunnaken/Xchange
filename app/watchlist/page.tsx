@@ -1,12 +1,27 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   fetchWatchlist,
   removeFromWatchlistApi,
   type WatchlistItem,
 } from "../../lib/watchlist-api";
+import {
+  getPriceAlerts,
+  savePriceAlerts,
+  getAlertForTicker,
+  isNearTrigger,
+  isAlertTriggered,
+  addInAppNotification,
+  type PriceAlert,
+  MAX_ALERTS_FREE,
+} from "../../lib/price-alerts";
+import { PriceAlertModal } from "../../components/PriceAlertModal";
+import { useToast } from "../../components/ToastContext";
+import { useLivePrices } from "../../lib/hooks/useLivePrice";
+import { getFinnhubWS } from "../../lib/finnhub-websocket";
+import { PriceDisplay } from "../../components/PriceDisplay";
 
 const HEADER_TICKERS_KEY = "xchange-header-tickers";
 const MAX_HEADER_TICKERS = 12;
@@ -34,13 +49,37 @@ function useDefaultHeaderTickers() {
   window.dispatchEvent(new Event("xchange-header-tickers-changed"));
 }
 
-type Quote = { price: number; changePercent: number };
+function BellIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className ?? "h-5 w-5"} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+    </svg>
+  );
+}
+
+function formatPrice(p: number) {
+  return p >= 1 ? `$${p.toFixed(2)}` : `$${p.toFixed(4)}`;
+}
 
 export default function WatchlistPage() {
+  const { showToast } = useToast();
+  const [activeTab, setActiveTab] = useState<"watchlist" | "alerts">("watchlist");
   const [items, setItems] = useState<WatchlistItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [quotes, setQuotes] = useState<Record<string, Quote>>({});
   const [headerSymbols, setHeaderSymbols] = useState<string[]>([]);
+  const watchlistTickers = items.map((i) => i.ticker);
+  const liveQuotes = useLivePrices(watchlistTickers);
+  const [alerts, setAlerts] = useState<PriceAlert[]>([]);
+  const [alertQuotes, setAlertQuotes] = useState<Record<string, number>>({});
+  const [alertsFilter, setAlertsFilter] = useState<"all" | "active" | "triggered" | "paused">("all");
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalPrefillTicker, setModalPrefillTicker] = useState<string | undefined>();
+  const [editingAlert, setEditingAlert] = useState<PriceAlert | null>(null);
+  const [notificationsGranted, setNotificationsGranted] = useState(false);
+
+  const refreshAlerts = useCallback(() => {
+    setAlerts(getPriceAlerts());
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -61,25 +100,95 @@ export default function WatchlistPage() {
     setHeaderSymbols(getHeaderTickerSymbols());
   }, []);
 
-  const tickerList = items.map((i) => i.ticker).sort().join(",");
   useEffect(() => {
-    if (items.length === 0) return;
-    let cancelled = false;
-    const next: Record<string, Quote> = {};
-    Promise.all(
-      items.map((item) =>
-        fetch(`/api/ticker-quote?ticker=${encodeURIComponent(item.ticker)}`, { cache: "no-store" })
-          .then((r) => r.json())
-          .then((d) => {
-            if (!cancelled && d?.price != null) next[item.ticker] = { price: d.price, changePercent: d.changePercent ?? 0 };
-          })
-          .catch(() => {})
-      )
-    ).then(() => {
-      if (!cancelled) setQuotes((prev) => ({ ...prev, ...next }));
+    refreshAlerts();
+  }, [refreshAlerts]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      setNotificationsGranted(Notification.permission === "granted");
+    }
+  }, []);
+
+  // Price alerts: subscribe to WebSocket for each active alert ticker; check conditions on every price update
+  const lastPricesRef = useRef<Record<string, number>>({});
+  useEffect(() => {
+    const list = getPriceAlerts().filter((a) => a.status === "active");
+    const tickers = [...new Set(list.map((a) => a.ticker))];
+    if (tickers.length === 0) return;
+
+    const ws = getFinnhubWS();
+    if (!ws) return;
+
+    const unsubs: (() => void)[] = [];
+    tickers.forEach((ticker) => {
+      fetch(`/api/ticker-quote?ticker=${encodeURIComponent(ticker)}`, { cache: "no-store" })
+        .then((r) => r.json())
+        .then((d) => {
+          const prevClose = d?.previousClose ?? d?.pc ?? d?.price;
+          if (prevClose != null && typeof prevClose === "number") ws.setPrevClose(ticker, prevClose);
+          setAlertQuotes((prev) => ({ ...prev, [ticker]: d?.price ?? prev[ticker] }));
+        })
+        .catch(() => {});
+
+      const unsub = ws.onPrice(ticker, (price, _change, _changePercent) => {
+        setAlertQuotes((prev) => ({ ...prev, [ticker]: price }));
+        const alertsForTicker = getPriceAlerts().filter((a) => a.status === "active" && a.ticker === ticker);
+        const now = new Date().toISOString();
+        let updated = false;
+        const nextList = getPriceAlerts().map((a) => {
+          if (a.status !== "active" || a.ticker !== ticker) return a;
+          const lastPrice = lastPricesRef.current[ticker];
+          const crossed =
+            a.condition === "above"
+              ? (lastPrice == null && price >= a.targetPrice) || (lastPrice != null && lastPrice < a.targetPrice && price >= a.targetPrice)
+              : (lastPrice == null && price <= a.targetPrice) || (lastPrice != null && lastPrice > a.targetPrice && price <= a.targetPrice);
+          lastPricesRef.current[ticker] = price;
+          if (!crossed) return { ...a, currentPrice: price };
+          updated = true;
+          if (a.notifyBrowser && typeof Notification !== "undefined" && Notification.permission === "granted") {
+            try {
+              new Notification("Xchange Price Alert", {
+                body: `${a.ticker} has reached ${formatPrice(price)} — your target was ${formatPrice(a.targetPrice)}`,
+                icon: "/logo.png",
+                tag: a.id,
+              });
+            } catch {}
+          }
+          if (a.notifyInApp) {
+            addInAppNotification({
+              type: "price_alert",
+              ticker: a.ticker,
+              message: `Price Alert: ${a.ticker} reached ${formatPrice(price)}`,
+              price,
+              targetPrice: a.targetPrice,
+              link: `/search/${a.ticker}`,
+            });
+          }
+          showToast(
+            `${a.ticker} hit ${formatPrice(price)} — your target price`,
+            a.condition === "above" ? "success" : "error",
+            5000
+          );
+          return {
+            ...a,
+            status: a.repeat ? ("active" as const) : ("triggered" as const),
+            triggeredAt: a.repeat ? a.triggeredAt : now,
+            currentPrice: price,
+          };
+        });
+        if (updated) {
+          savePriceAlerts(nextList);
+          setAlerts(nextList);
+        }
+      });
+      unsubs.push(unsub);
     });
-    return () => { cancelled = true; };
-  }, [tickerList, items.length]);
+
+    return () => {
+      unsubs.forEach((u) => u());
+    };
+  }, [alerts.length, alerts.map((a) => a.id).join(","), showToast]);
 
   const addTickerToHeader = (ticker: string) => {
     const sym = ticker.toUpperCase().trim();
@@ -92,8 +201,7 @@ export default function WatchlistPage() {
     });
   };
 
-  const removeTickerFromHeader = (ticker: string) => {
-    const sym = ticker.toUpperCase();
+  const removeTickerFromHeader = (sym: string) => {
     setHeaderSymbols((prev) => {
       const next = prev.filter((s) => s !== sym);
       setHeaderTickerSymbols(next);
@@ -126,6 +234,37 @@ export default function WatchlistPage() {
     }
   };
 
+  const openAlertModal = (prefillTicker?: string, alert?: PriceAlert | null) => {
+    setModalPrefillTicker(prefillTicker);
+    setEditingAlert(alert ?? null);
+    setModalOpen(true);
+  };
+
+  const closeAlertModal = () => {
+    setModalOpen(false);
+    setModalPrefillTicker(undefined);
+    setEditingAlert(null);
+  };
+
+  const requestNotificationPermission = async () => {
+    if (typeof Notification === "undefined") return;
+    const p = await Notification.requestPermission();
+    setNotificationsGranted(p === "granted");
+  };
+
+  const handlePauseResume = (alert: PriceAlert) => {
+    const list = getPriceAlerts().map((a) =>
+      a.id === alert.id ? { ...a, status: (a.status === "paused" ? "active" : "paused") as PriceAlert["status"] } : a
+    );
+    savePriceAlerts(list);
+    refreshAlerts();
+  };
+
+  const handleDeleteAlert = (id: string) => {
+    savePriceAlerts(getPriceAlerts().filter((a) => a.id !== id));
+    refreshAlerts();
+  };
+
   if (loading) {
     return (
       <div className="mx-auto max-w-4xl px-4 py-8">
@@ -136,109 +275,352 @@ export default function WatchlistPage() {
   }
 
   const isInHeader = (ticker: string) => headerSymbols.includes(ticker.toUpperCase());
+  const activeCount = alerts.filter((a) => a.status === "active").length;
+  const triggeredCount = alerts.filter((a) => a.status === "triggered").length;
+  const pausedCount = alerts.filter((a) => a.status === "paused").length;
+
+  const filteredAlerts =
+    alertsFilter === "all"
+      ? [...alerts]
+      : alertsFilter === "active"
+        ? alerts.filter((a) => a.status === "active")
+        : alertsFilter === "triggered"
+          ? alerts.filter((a) => a.status === "triggered")
+          : alerts.filter((a) => a.status === "paused");
+
+  // Sort: triggered first (recent first), then active by closest to triggering, then paused by created
+  filteredAlerts.sort((a, b) => {
+    if (a.status === "triggered" && b.status !== "triggered") return -1;
+    if (a.status !== "triggered" && b.status === "triggered") return 1;
+    if (a.status === "triggered" && b.status === "triggered") {
+      return (b.triggeredAt ?? b.createdAt).localeCompare(a.triggeredAt ?? a.createdAt);
+    }
+    if (a.status === "active" && b.status === "active") {
+      const priceA = alertQuotes[a.ticker] ?? a.currentPrice ?? 0;
+      const priceB = alertQuotes[b.ticker] ?? b.currentPrice ?? 0;
+      const distA = priceA > 0 ? Math.abs((a.targetPrice - priceA) / priceA) * 100 : 999;
+      const distB = priceB > 0 ? Math.abs((b.targetPrice - priceB) / priceB) * 100 : 999;
+      return distA - distB;
+    }
+    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+  });
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8">
-      <h1 className="text-2xl font-semibold text-zinc-100">My Watchlist</h1>
+      <div className="flex items-center justify-between gap-4">
+        <h1 className="text-2xl font-semibold text-zinc-100">My Watchlist</h1>
+        <div className="flex rounded-full border border-white/10 bg-white/5 p-1">
+          <button
+            type="button"
+            onClick={() => setActiveTab("watchlist")}
+            className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
+              activeTab === "watchlist" ? "bg-white/15 text-zinc-100" : "text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            Watchlist
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("alerts")}
+            className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
+              activeTab === "alerts" ? "bg-white/15 text-zinc-100" : "text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            Price Alerts
+          </button>
+        </div>
+      </div>
 
-      {/* Header bar section: default vs custom, remove any ticker */}
-      <section className="mt-6 rounded-lg border border-white/10 bg-white/5 p-4">
-        <h2 className="text-sm font-semibold text-zinc-200">Header bar tickers</h2>
-        <p className="mt-1 text-xs text-zinc-500">
-          Tickers shown in the top rotating bar. Use the icon on each watchlist card to add. Remove any below with ×. Default = SPY, QQQ, BTC, etc.
-        </p>
-        {headerSymbols.length === 0 ? (
-          <p className="mt-3 text-sm text-zinc-400">Using default tickers (SPY, QQQ, BTC, ETH, GLD, OIL, DXY, EUR/USD).</p>
-        ) : (
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            {headerSymbols.map((sym) => (
-              <span
-                key={sym}
-                className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-sm text-zinc-200"
+      {activeTab === "watchlist" && (
+        <>
+          <section className="mt-6 rounded-lg border border-white/10 bg-white/5 p-4">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold text-zinc-200">Header bar tickers</h2>
+              <button
+                type="button"
+                onClick={() => openAlertModal()}
+                className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-white/10"
               >
-                {sym}
+                New Alert
+              </button>
+            </div>
+            <p className="mt-1 text-xs text-zinc-500">
+              Tickers shown in the top rotating bar. Use the icon on each watchlist card to add. Remove any below with ×. Default = SPY, QQQ, BTC, etc.
+            </p>
+            {headerSymbols.length === 0 ? (
+              <p className="mt-3 text-sm text-zinc-400">Using default tickers (SPY, QQQ, BTC, ETH, GLD, OIL, DXY, EUR/USD).</p>
+            ) : (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                {headerSymbols.map((sym) => (
+                  <span
+                    key={sym}
+                    className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-sm text-zinc-200"
+                  >
+                    {sym}
+                    <button
+                      type="button"
+                      onClick={() => removeTickerFromHeader(sym)}
+                      className="rounded-full p-0.5 text-zinc-400 hover:bg-red-500/20 hover:text-red-400"
+                      aria-label={`Remove ${sym} from header bar`}
+                    >
+                      <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <button type="button" onClick={useDefault} className="mt-3 text-xs font-medium text-[var(--accent-color)] hover:underline">
+              Use default tickers
+            </button>
+          </section>
+
+          {items.length === 0 ? (
+            <p className="mt-6 text-zinc-400">No assets in watchlist yet. Search for a stock or crypto to add.</p>
+          ) : (
+            <ul className="mt-6 space-y-2">
+              {items.map((item) => {
+                const q = liveQuotes[item.ticker];
+                const inHeader = isInHeader(item.ticker);
+                const alertForTicker = getAlertForTicker(item.ticker);
+                const near = alertForTicker && q?.price != null && isNearTrigger(alertForTicker, q.price);
+                const bellColor = alertForTicker ? (near ? "text-amber-400" : "text-emerald-400") : "text-zinc-400";
+                return (
+                  <li key={item.ticker}>
+                    <div className="flex items-center justify-between gap-3 rounded-lg bg-white/5 px-4 py-3 transition-colors hover:bg-white/10">
+                      <Link
+                        href={`/search/${encodeURIComponent(item.ticker)}`}
+                        className="min-w-0 flex-1 flex items-center justify-between gap-3"
+                      >
+                        <span className="font-medium text-zinc-200">{item.ticker}</span>
+                        <div className="flex shrink-0 items-center gap-4 text-sm">
+                          {q?.price != null ? (
+                            <PriceDisplay
+                              price={q.price}
+                              change={q.change}
+                              changePercent={q.changePercent}
+                              symbol={item.ticker}
+                            />
+                          ) : q?.isLoading ? (
+                            <span className="text-zinc-500">—</span>
+                          ) : (
+                            <span className="text-zinc-500">—</span>
+                          )}
+                        </div>
+                      </Link>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); openAlertModal(item.ticker, alertForTicker ?? undefined); }}
+                          className={`rounded p-2 transition-colors hover:opacity-90 ${bellColor}`}
+                          title={alertForTicker ? (near ? "Alert near target" : "Edit alert") : "Set price alert"}
+                          aria-label="Price alert"
+                        >
+                          <BellIcon />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleHeaderTicker(item.ticker); }}
+                          className={`rounded p-2 transition-colors ${
+                            inHeader ? "text-[var(--accent-color)]" : "text-zinc-400 hover:bg-white/5 hover:text-zinc-300"
+                          }`}
+                          title={inHeader ? "Remove from header bar" : "Add to header bar"}
+                          aria-label={inHeader ? "Remove from header bar" : "Add to header bar"}
+                        >
+                          {inHeader ? (
+                            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+                          ) : (
+                            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => handleRemove(item.ticker, e)}
+                          className="rounded px-2.5 py-1.5 text-xs font-medium text-zinc-400 transition-colors hover:bg-red-500/10 hover:text-red-400"
+                          aria-label={`Remove ${item.ticker} from watchlist`}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </>
+      )}
+
+      {activeTab === "alerts" && (
+        <>
+          <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
+            <span className="text-sm text-zinc-400">{activeCount} active alerts</span>
+            <div className="flex items-center gap-2">
+              {!notificationsGranted && typeof window !== "undefined" && "Notification" in window && (
                 <button
                   type="button"
-                  onClick={() => removeTickerFromHeader(sym)}
-                  className="rounded-full p-0.5 text-zinc-400 hover:bg-red-500/20 hover:text-red-400"
-                  aria-label={`Remove ${sym} from header bar`}
+                  onClick={requestNotificationPermission}
+                  className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-white/10"
                 >
-                  <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                  Enable Notifications
                 </button>
-              </span>
+              )}
+              <button
+                type="button"
+                onClick={() => { setEditingAlert(null); setModalPrefillTicker(undefined); setModalOpen(true); }}
+                disabled={alerts.length >= MAX_ALERTS_FREE}
+                className="rounded-full bg-[var(--accent-color)] px-4 py-2 text-sm font-semibold text-[#020308] hover:opacity-90 disabled:opacity-50"
+              >
+                New Alert
+              </button>
+            </div>
+          </div>
+          {alerts.length >= MAX_ALERTS_FREE && (
+            <p className="mt-2 text-xs text-amber-400">Upgrade to Pro for unlimited alerts.</p>
+          )}
+
+          <div className="mt-3 flex gap-1 rounded-full border border-white/10 bg-white/5 p-1">
+            {(["all", "active", "triggered", "paused"] as const).map((f) => (
+              <button
+                key={f}
+                type="button"
+                onClick={() => setAlertsFilter(f)}
+                className={`rounded-full px-3 py-1.5 text-xs font-medium capitalize ${
+                  alertsFilter === f ? "bg-white/15 text-zinc-100" : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                {f === "all" ? "All" : f} ({f === "all" ? alerts.length : f === "active" ? activeCount : f === "triggered" ? triggeredCount : pausedCount})
+              </button>
             ))}
           </div>
-        )}
-        <button
-          type="button"
-          onClick={useDefault}
-          className="mt-3 text-xs font-medium text-[var(--accent-color)] hover:underline"
-        >
-          Use default tickers
-        </button>
-      </section>
 
-      {/* Watchlist: each card has add-to-header icon in the rectangle */}
-      {items.length === 0 ? (
-        <p className="mt-6 text-zinc-400">
-          No assets in watchlist yet. Search for a stock or crypto to add.
-        </p>
-      ) : (
-        <ul className="mt-6 space-y-2">
-          {items.map((item) => {
-            const q = quotes[item.ticker];
-            const priceStr = q?.price != null ? (q.price >= 1 ? `$${q.price.toFixed(2)}` : `$${q.price.toFixed(4)}`) : null;
-            const ch = q?.changePercent;
-            const inHeader = isInHeader(item.ticker);
-            return (
-              <li key={item.ticker}>
-                <div className="flex items-center justify-between gap-3 rounded-lg bg-white/5 px-4 py-3 transition-colors hover:bg-white/10">
-                  <Link
-                    href={`/search/${encodeURIComponent(item.ticker)}`}
-                    className="min-w-0 flex-1 flex items-center justify-between gap-3"
+          {filteredAlerts.length === 0 ? (
+            <div className="mt-8 flex flex-col items-center justify-center rounded-2xl border border-white/10 bg-white/5 py-16 text-center">
+              <p className="text-zinc-300">No price alerts set</p>
+              <p className="mt-2 max-w-sm text-sm text-zinc-500">
+                Get notified when any stock, crypto or currency hits your target price.
+              </p>
+              <button
+                type="button"
+                onClick={() => setModalOpen(true)}
+                className="mt-6 rounded-full bg-[var(--accent-color)] px-6 py-2.5 text-sm font-semibold text-[#020308] hover:opacity-90"
+              >
+                Create your first alert
+              </button>
+            </div>
+          ) : (
+            <ul className="mt-4 space-y-3">
+              {filteredAlerts.map((alert) => {
+                const currentPrice = alertQuotes[alert.ticker] ?? alert.currentPrice ?? 0;
+                const triggered = alert.status === "triggered";
+                const near = alert.status === "active" && currentPrice > 0 && isNearTrigger(alert, currentPrice);
+                const pct =
+                  currentPrice > 0 && alert.targetPrice > 0
+                    ? Math.abs(((alert.targetPrice - currentPrice) / currentPrice) * 100)
+                    : null;
+                const borderColor = triggered
+                  ? alert.condition === "above"
+                    ? "border-l-emerald-500"
+                    : "border-l-red-500"
+                  : near
+                    ? "border-l-amber-500"
+                    : alert.condition === "above"
+                      ? "border-l-emerald-500/70"
+                      : "border-l-red-500/70";
+                return (
+                  <li
+                    key={alert.id}
+                    className={`rounded-lg border border-white/10 bg-[#0F1520] pl-4 pr-3 py-3 border-l-4 ${borderColor} ${triggered ? "ring-1 ring-emerald-500/20" : ""}`}
                   >
-                    <span className="font-medium text-zinc-200">{item.ticker}</span>
-                    <div className="flex shrink-0 items-center gap-4 text-sm">
-                      {priceStr && <span className="text-zinc-400">{priceStr}</span>}
-                      {ch != null && (
-                        <span className={ch >= 0 ? "text-emerald-400" : "text-red-400"}>
-                          {ch >= 0 ? "+" : ""}{ch.toFixed(2)}%
-                        </span>
-                      )}
-                      {!priceStr && ch == null && <span className="text-zinc-500">—</span>}
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-bold text-zinc-100">{alert.ticker}</span>
+                          {alert.company && alert.company !== alert.ticker && (
+                            <span className="text-sm text-zinc-500">{alert.company}</span>
+                          )}
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                          <span
+                            className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${
+                              alert.condition === "above" ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400"
+                            }`}
+                          >
+                            {alert.condition === "above" ? "ABOVE" : "BELOW"} {formatPrice(alert.targetPrice)}
+                          </span>
+                          {triggered && (
+                            <span className={`rounded px-2 py-0.5 text-xs font-medium ${alert.condition === "above" ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400"}`}>
+                              TRIGGERED
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-1 text-sm text-zinc-400">
+                          Current: {currentPrice > 0 ? formatPrice(currentPrice) : "—"}
+                          {pct != null && alert.status === "active" && (
+                            <span className={near ? "ml-2 text-amber-400" : "ml-2 text-zinc-500"}>
+                              {pct.toFixed(1)}% away
+                            </span>
+                          )}
+                        </p>
+                        {alert.name && <p className="mt-0.5 text-xs text-zinc-500">{alert.name}</p>}
+                        <p className="mt-0.5 text-[10px] text-zinc-600">{new Date(alert.createdAt).toLocaleDateString()}</p>
+                        {triggered && alert.triggeredAt && (
+                          <p className="text-[10px] text-zinc-500">Triggered {new Date(alert.triggeredAt).toLocaleString()}</p>
+                        )}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        {alert.status === "active" && (
+                          <button
+                            type="button"
+                            onClick={() => handlePauseResume(alert)}
+                            className="rounded p-2 text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
+                            title="Pause alert"
+                          >
+                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                          </button>
+                        )}
+                        {alert.status === "paused" && (
+                          <button
+                            type="button"
+                            onClick={() => handlePauseResume(alert)}
+                            className="rounded p-2 text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
+                            title="Resume alert"
+                          >
+                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => { setEditingAlert(alert); setModalOpen(true); }}
+                          className="rounded p-2 text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
+                          title="Edit"
+                        >
+                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteAlert(alert.id)}
+                          className="rounded p-2 text-zinc-400 hover:bg-red-500/10 hover:text-red-400"
+                          title="Delete"
+                        >
+                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                        </button>
+                      </div>
                     </div>
-                  </Link>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleHeaderTicker(item.ticker); }}
-                      className={`rounded p-2 transition-colors ${
-                        inHeader ? "text-[var(--accent-color)]" : "text-zinc-400 hover:bg-white/5 hover:text-zinc-300"
-                      }`}
-                      title={inHeader ? "Remove from header bar" : "Add to header bar"}
-                      aria-label={inHeader ? "Remove from header bar" : "Add to header bar"}
-                    >
-                      {inHeader ? (
-                        <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
-                      ) : (
-                        <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => handleRemove(item.ticker, e)}
-                      className="rounded px-2.5 py-1.5 text-xs font-medium text-zinc-400 transition-colors hover:bg-red-500/10 hover:text-red-400"
-                      aria-label={`Remove ${item.ticker} from watchlist`}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </>
       )}
+
+      <PriceAlertModal
+        open={modalOpen}
+        onClose={closeAlertModal}
+        editingAlert={editingAlert}
+        prefilledTicker={modalPrefillTicker}
+        onSaved={refreshAlerts}
+      />
     </div>
   );
 }

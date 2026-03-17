@@ -1,92 +1,82 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useLivePrices } from "../lib/hooks/useLivePrice";
+import { PriceDisplay } from "./PriceDisplay";
 
-const TICKER_CACHE_KEY = "xchange-ticker-cache";
 const HEADER_TICKERS_KEY = "xchange-header-tickers";
+const DEFAULT_SYMBOLS = ["SPY", "QQQ", "AAPL", "BTC", "ETH", "GLD", "EURUSD", "DXY"];
+
+const SYMBOL_NAMES: Record<string, string> = {
+  SPY: "S&P 500",
+  QQQ: "Nasdaq",
+  AAPL: "Apple",
+  BTC: "Bitcoin",
+  ETH: "Ethereum",
+  GLD: "Gold",
+  OIL: "Oil",
+  USO: "Oil",
+  DXY: "Dollar Index",
+  EURUSD: "EUR/USD",
+};
 
 function getHeaderTickerSymbols(): string[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = localStorage.getItem(HEADER_TICKERS_KEY);
-    if (!raw) return []; // no key = use default tickers
-    const parsed = JSON.parse(raw);
-    const list = Array.isArray(parsed) ? parsed.filter((s) => typeof s === "string").slice(0, 12) : [];
-    return [...new Set(list)]; // dedupe
-  } catch {
-    return [];
-  }
-}
-
-type Ticker = {
-  id: string;
-  name: string;
-  symbol: string;
-  price: number;
-  change: number;
-  changePercent: number;
-  source: "live" | "mock";
-};
-
-const FALLBACK_TICKERS: Ticker[] = [
-  { id: "spy", name: "S&P 500", symbol: "SPY", price: 5850, change: 42.5, changePercent: 0.73, source: "mock" },
-  { id: "qqq", name: "Nasdaq", symbol: "QQQ", price: 5250, change: -18.2, changePercent: -0.35, source: "mock" },
-  { id: "btc", name: "Bitcoin", symbol: "BTC", price: 97200, change: 1200, changePercent: 1.25, source: "mock" },
-  { id: "eth", name: "Ethereum", symbol: "ETH", price: 3450, change: -22, changePercent: -0.63, source: "mock" },
-  { id: "gld", name: "Gold", symbol: "GLD", price: 265, change: 1.2, changePercent: 0.47, source: "mock" },
-  { id: "oil", name: "Oil", symbol: "OIL", price: 78.2, change: -1.1, changePercent: -1.39, source: "mock" },
-  { id: "dxy", name: "Dollar Index", symbol: "DXY", price: 104.2, change: 0.15, changePercent: 0.14, source: "mock" },
-  { id: "eurusd", name: "EUR/USD", symbol: "EURUSD", price: 1.085, change: -0.002, changePercent: -0.18, source: "mock" },
-];
-
-function getCachedTickers(): Ticker[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = sessionStorage.getItem(TICKER_CACHE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    const list = Array.isArray(parsed) ? parsed.filter((s) => typeof s === "string").slice(0, 12) : [];
+    return [...new Set(list)];
   } catch {
     return [];
   }
 }
 
-function setCachedTickers(tickers: Ticker[]) {
-  if (typeof window === "undefined") return;
-  try {
-    sessionStorage.setItem(TICKER_CACHE_KEY, JSON.stringify(tickers));
-  } catch {
-    // ignore
-  }
-}
+const CRYPTO_SYMBOLS = new Set(["BTC", "ETH"]);
 
-function formatPrice(price: number, symbol: string): string {
-  if (symbol === "BTC" || symbol === "ETH") return price >= 1000 ? `${(price / 1000).toFixed(1)}k` : price.toFixed(0);
-  if (symbol === "EURUSD") return price.toFixed(4);
-  return price >= 1 ? price.toFixed(2) : price.toFixed(4);
-}
-
-function TickerItem({ t }: { t: Ticker }) {
-  const isPositive = t.changePercent >= 0;
-  const isZero = t.changePercent === 0;
-  const dotColor = isZero ? "bg-zinc-500" : isPositive ? "bg-emerald-400" : "bg-red-400";
+function TickerItem({
+  symbol,
+  name,
+  data,
+}: {
+  symbol: string;
+  name: string;
+  data: { price: number | null; change: number | null; changePercent: number | null; isLoading: boolean };
+}) {
+  const isPositive = data.changePercent != null && data.changePercent >= 0;
+  const isZero = data.changePercent != null && data.changePercent === 0;
+  const dotColor = data.isLoading ? "bg-white/20" : isZero ? "bg-zinc-500" : isPositive ? "bg-emerald-400" : "bg-red-400";
+  const isCrypto = CRYPTO_SYMBOLS.has(symbol);
+  const changeLabel = isCrypto ? "24h change (CoinGecko); may differ from TradingView day change" : undefined;
   return (
     <Link
       href="/news"
       className="flex shrink-0 items-center gap-2 whitespace-nowrap rounded px-3 py-1 text-xs transition hover:bg-white/5"
+      title={changeLabel}
     >
-      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotColor}`} aria-hidden />
-      <span className="font-medium text-zinc-200">{t.name}</span>
-      <span className="text-zinc-500">{formatPrice(t.price, t.symbol)}</span>
-      <span
-        className={
-          isZero ? "text-zinc-500" : isPositive ? "font-medium text-emerald-400" : "font-medium text-red-400"
-        }
-      >
-        {isPositive ? "+" : ""}
-        {t.changePercent.toFixed(2)}%
-      </span>
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotColor} ${data.isLoading ? "animate-pulse" : ""}`} aria-hidden />
+      <span className="font-medium text-zinc-200">{name}</span>
+      {data.price != null ? (
+        <>
+          <PriceDisplay
+            price={data.price}
+            change={data.change}
+            changePercent={data.changePercent}
+            symbol={symbol}
+            format="compact"
+            showChange={true}
+          />
+          {isCrypto && (
+            <span className="text-[10px] text-zinc-500" title={changeLabel}>
+              24h
+            </span>
+          )}
+        </>
+      ) : (
+        <span className="text-zinc-500">—</span>
+      )}
     </Link>
   );
 }
@@ -107,79 +97,29 @@ function TickerSkeleton() {
 }
 
 export function MarketTickerBar() {
-  const [tickers, setTickers] = useState<Ticker[]>(FALLBACK_TICKERS);
-  const [loading, setLoading] = useState(false);
-
-  const fetchTickers = useCallback(async () => {
-    const symbols = getHeaderTickerSymbols();
-    const url = symbols.length > 0 ? `/api/market-tickers?symbols=${encodeURIComponent(symbols.join(","))}` : "/api/market-tickers";
-    try {
-      const res = await fetch(url, { cache: "no-store" });
-      const data = await res.json();
-      const raw = Array.isArray(data) ? data : [];
-      const list = raw.map((t: Record<string, unknown>) => ({
-        id: (t.id as string) ?? (t.symbol as string)?.toLowerCase() ?? "",
-        name: (t.name as string) ?? (t.symbol as string) ?? "",
-        symbol: (t.symbol as string) ?? "",
-        price: Number(t.price) ?? 0,
-        change: Number(t.change) ?? 0,
-        changePercent: Number(t.changePercent) ?? 0,
-        source: (t.source as "live" | "mock") ?? "live",
-      })) as Ticker[];
-      if (list.length > 0) {
-        setCachedTickers(list);
-        setTickers((prev) => {
-          if (prev.length === list.length && prev.every((p, i) => p.symbol === list[i]?.symbol && p.price === list[i]?.price)) return prev;
-          return list;
-        });
-      } else {
-        const cached = getCachedTickers();
-        setTickers((prev) => {
-          const next = cached.length > 0 ? cached : FALLBACK_TICKERS;
-          if (prev.length === next.length && prev.every((p, i) => p.symbol === next[i]?.symbol)) return prev;
-          return next;
-        });
-      }
-    } catch {
-      const cached = getCachedTickers();
-      setTickers((prev) => {
-        const next = cached.length > 0 ? cached : FALLBACK_TICKERS;
-        if (prev.length === next.length && prev.every((p, i) => p.symbol === next[i]?.symbol)) return prev;
-        return next;
-      });
-    }
-  }, []);
+  const [symbols, setSymbols] = useState<string[]>([]);
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      await fetchTickers();
-      if (!cancelled) setLoading(false);
-    })();
-    const interval = setInterval(fetchTickers, 60 * 1000);
-    const onCustomChange = () => fetchTickers();
-    window.addEventListener("xchange-header-tickers-changed" as any, onCustomChange);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-      window.removeEventListener("xchange-header-tickers-changed" as any, onCustomChange);
+    const load = () => {
+      const list = getHeaderTickerSymbols();
+      setSymbols(list.length > 0 ? list : DEFAULT_SYMBOLS);
     };
-  }, [fetchTickers]);
+    load();
+    window.addEventListener("xchange-header-tickers-changed", load);
+    return () => window.removeEventListener("xchange-header-tickers-changed", load);
+  }, []);
 
-  if (loading && tickers.length === 0) {
+  const list = (symbols.length > 0 ? symbols : DEFAULT_SYMBOLS).map((s) => (typeof s === "string" ? s.toUpperCase() : s)).slice(0, 12);
+  const prices = useLivePrices(list.length > 0 ? list : DEFAULT_SYMBOLS);
+
+  if (list.length === 0) {
     return <TickerSkeleton />;
   }
 
-  if (tickers.length === 0) {
-    return (
-      <div className="flex min-w-0 flex-1 items-center justify-center overflow-hidden rounded border border-white/10 bg-white/5 px-4 py-2 text-xs text-zinc-500">
-        Data temporarily unavailable — refresh to try again
-      </div>
-    );
+  const allLoading = list.every((s) => prices[s]?.isLoading);
+  if (allLoading && list.length > 0 && !list.some((s) => prices[s]?.price != null)) {
+    return <TickerSkeleton />;
   }
-
-  const list = tickers.slice(0, 12);
 
   return (
     <div
@@ -189,8 +129,13 @@ export function MarketTickerBar() {
       role="region"
     >
       <div className="ticker-marquee-track flex gap-8" style={{ width: "max-content" }} key="ticker-track">
-        {[...list, ...list].map((t, i) => (
-          <TickerItem key={t.symbol + "-" + i} t={t} />
+        {[...list, ...list].map((symbol, i) => (
+          <TickerItem
+            key={`${symbol}-${i}`}
+            symbol={symbol}
+            name={SYMBOL_NAMES[symbol] ?? symbol}
+            data={prices[symbol] ?? { price: null, change: null, changePercent: null, isLoading: true }}
+          />
         ))}
       </div>
     </div>

@@ -11,6 +11,8 @@ import { getPoints, loadBets, loadMarkets, type PredictMarket } from "../../lib/
 import { getStoredConversations } from "../../lib/ai-chat-storage";
 import { useAuth } from "../AuthContext";
 import { fetchWatchlist, type WatchlistItem } from "../../lib/watchlist-api";
+import { useLivePrices } from "../../lib/hooks/useLivePrice";
+import { PriceDisplay } from "../PriceDisplay";
 
 type WidgetContentProps = { widgetId: WidgetId; onLoaded?: () => void };
 
@@ -34,6 +36,8 @@ export function WatchlistWidget({ onLoaded }: WidgetContentProps) {
   );
 }
 
+const DEFAULT_MARKET_SYMBOLS = ["SPY", "QQQ", "DXY", "VIX", "BTC", "GLD"];
+
 export function MarketOverviewWidget({ onLoaded }: WidgetContentProps) {
   const [data, setData] = useState<{ symbol: string; name: string; price: number; changePercent: number }[]>([]);
   const [loading, setLoading] = useState(true);
@@ -45,15 +49,25 @@ export function MarketOverviewWidget({ onLoaded }: WidgetContentProps) {
       onLoaded?.();
     }).catch(() => { setLoading(false); onLoaded?.(); });
   }, [onLoaded]);
-  if (loading) return null;
+  const symbols = data.length > 0 ? data.map((t) => t.symbol) : DEFAULT_MARKET_SYMBOLS;
+  const live = useLivePrices(symbols);
+  if (loading && data.length === 0) return null;
+  const list = data.length > 0 ? data : DEFAULT_MARKET_SYMBOLS.map((s) => ({ symbol: s, name: s, price: 0, changePercent: 0 }));
   return (
     <div className="space-y-1 p-2">
-      {data.map((t) => (
-        <div key={t.symbol} className="flex justify-between text-xs">
-          <span className="text-zinc-400">{t.symbol}</span>
-          <span className={t.changePercent >= 0 ? "text-emerald-400" : "text-red-400"}>{t.price} ({t.changePercent >= 0 ? "+" : ""}{t.changePercent.toFixed(2)}%)</span>
-        </div>
-      ))}
+      {list.map((t) => {
+        const l = live[t.symbol];
+        return (
+          <div key={t.symbol} className="flex justify-between text-xs">
+            <span className="text-zinc-400">{t.symbol}</span>
+            {l?.price != null ? (
+              <PriceDisplay price={l.price} change={l.change} changePercent={l.changePercent} symbol={t.symbol} format="compact" showChange={true} />
+            ) : (
+              <span className={t.changePercent >= 0 ? "text-emerald-400" : "text-red-400"}>{t.price} ({t.changePercent >= 0 ? "+" : ""}{t.changePercent.toFixed(2)}%)</span>
+            )}
+          </div>
+        );
+      })}
       <p className="mt-1 text-[10px] text-zinc-500">Market Open · Live</p>
     </div>
   );

@@ -9,6 +9,7 @@ import { DevNotes } from "../components/DevNotes";
 import { PlansFloatingTab } from "../components/PlansFloatingTab";
 import { ThemeProvider } from "../components/ThemeContext";
 import { ToastProvider } from "../components/ToastContext";
+import { PriceProvider } from "../lib/price-context";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -37,13 +38,15 @@ export default function RootLayout({
       >
         <ThemeProvider>
           <AuthProvider>
-            <ToastProvider>
-              <AccentSync />
+            <PriceProvider>
+              <ToastProvider>
+                <AccentSync />
               <GlobalSearchShortcut />
               <PlansFloatingTab />
               <DevNotes />
-              <AppShell>{children}</AppShell>
-            </ToastProvider>
+                <AppShell>{children}</AppShell>
+              </ToastProvider>
+            </PriceProvider>
           </AuthProvider>
         </ThemeProvider>
       </body>

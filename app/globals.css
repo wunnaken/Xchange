@@ -593,3 +593,24 @@ html[data-theme="light"] .dark-bg-section .text-zinc-500 {
   }
 }
 
+/* Live price flash (WebSocket updates) */
+@keyframes flashGreen {
+  0% { background: transparent; }
+  30% { background: rgba(52, 211, 153, 0.25); }
+  100% { background: transparent; }
+}
+
+@keyframes flashRed {
+  0% { background: transparent; }
+  30% { background: rgba(239, 68, 68, 0.25); }
+  100% { background: transparent; }
+}
+
+.price-flash-up {
+  animation: flashGreen 0.5s ease-out;
+}
+
+.price-flash-down {
+  animation: flashRed 0.5s ease-out;
+}
+

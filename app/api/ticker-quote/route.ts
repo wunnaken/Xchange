@@ -23,23 +23,35 @@ async function fetchFinnhubQuote(symbol: string, token: string): Promise<TickerQ
     if (!res.ok) return null;
     const data = (await res.json()) as { c?: number; d?: number; dp?: number; h?: number; l?: number; o?: number; pc?: number; v?: number };
     if (data.c == null) return null;
+    const price = data.c;
+    const previousClose = data.pc ?? null;
+    const change = data.d != null ? data.d : (previousClose != null ? price - previousClose : null);
+    const changePercent = data.dp != null ? data.dp : (previousClose != null && previousClose !== 0 ? ((price - previousClose) / previousClose) * 100 : null);
     return {
-      price: data.c,
-      change: data.d ?? null,
-      changePercent: data.dp ?? null,
+      price,
+      change,
+      changePercent,
       volume: data.v ?? null,
       high: data.h ?? null,
       low: data.l ?? null,
       open: data.o ?? null,
-      previousClose: data.pc ?? null,
+      previousClose,
     };
   } catch {
     return null;
   }
 }
 
+const COINGECKO_CRYPTO_IDS: Record<string, string> = {
+  BTC: "bitcoin",
+  ETH: "ethereum",
+  BITCOIN: "bitcoin",
+  ETHEREUM: "ethereum",
+};
+
+/** Crypto: CoinGecko returns rolling 24h change. TradingView shows "day" change (previous session close). Values will differ. */
 async function fetchCryptoQuote(ticker: string): Promise<TickerQuote | null> {
-  const id = ticker === "BTC" ? "bitcoin" : ticker === "ETH" ? "ethereum" : null;
+  const id = COINGECKO_CRYPTO_IDS[ticker.toUpperCase()] ?? null;
   if (!id) return null;
   try {
     const res = await fetch(
@@ -51,15 +63,17 @@ async function fetchCryptoQuote(ticker: string): Promise<TickerQuote | null> {
     const c = data?.[id];
     if (c?.usd == null) return null;
     const changePercent = c.usd_24h_change ?? 0;
+    const change = (c.usd * changePercent) / 100;
+    const previousClose = c.usd - change;
     return {
       price: c.usd,
-      change: (c.usd * changePercent) / 100,
+      change,
       changePercent,
       volume: c.usd_24h_vol ?? null,
       high: null,
       low: null,
       open: null,
-      previousClose: null,
+      previousClose: Number.isFinite(previousClose) ? previousClose : c.usd,
     };
   } catch {
     return null;
@@ -71,14 +85,18 @@ export async function GET(request: NextRequest) {
   if (!ticker) {
     return NextResponse.json({ error: "Missing ticker" }, { status: 400 });
   }
+  // Crypto: only use CoinGecko (id "bitcoin" / "ethereum"). Never fall back to Finnhub —
+  // Finnhub's "BTC" is a different asset (~$32); we must show real Bitcoin (~$75k).
+  if (COINGECKO_CRYPTO_IDS[ticker] !== undefined) {
+    const crypto = await fetchCryptoQuote(ticker);
+    if (crypto) return NextResponse.json(crypto);
+    const empty: TickerQuote = { price: null, change: null, changePercent: null, volume: null, high: null, low: null, open: null, previousClose: null };
+    return NextResponse.json(empty);
+  }
   const key = process.env.FINNHUB_API_KEY;
   if (key) {
     const quote = await fetchFinnhubQuote(ticker, key);
     if (quote) return NextResponse.json(quote);
-    if (ticker === "BTC" || ticker === "ETH") {
-      const crypto = await fetchCryptoQuote(ticker);
-      if (crypto) return NextResponse.json(crypto);
-    }
   }
   const empty: TickerQuote = { price: null, change: null, changePercent: null, volume: null, high: null, low: null, open: null, previousClose: null };
   return NextResponse.json(empty);

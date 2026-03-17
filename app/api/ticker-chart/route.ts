@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 export const dynamic = "force-dynamic";
 export const revalidate = 30;
 
-export type ChartRange = "10m" | "1h" | "1d" | "1w" | "1m";
+export type ChartRange = "10m" | "1h" | "1d" | "1w" | "1m" | "3m" | "6m" | "1y" | "5y";
 
 export type ChartPoint = {
   time: number;
@@ -22,13 +22,72 @@ function toFinnhubSymbol(ticker: string): string {
   return u;
 }
 
-// Use daily (D) resolution so we get real OHLCV; intraday often returns empty outside market hours / on free tier
+// CoinGecko coin id for chart (real crypto prices; Finnhub often returns wrong scale for BTC/ETH)
+const COINGECKO_IDS: Record<string, string> = { BTC: "bitcoin", ETH: "ethereum" };
+
+async function fetchCoinGeckoChart(ticker: string, days: number): Promise<ChartPoint[] | null> {
+  const id = COINGECKO_IDS[ticker?.toUpperCase() ?? ""];
+  if (!id) return null;
+  try {
+    const res = await fetch(
+      `https://api.coingecko.com/api/v3/coins/${id}/market_chart?vs_currency=usd&days=${days}`,
+      { next: { revalidate: 0 } }
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as { prices?: [number, number][] };
+    const prices = data?.prices;
+    if (!Array.isArray(prices) || prices.length === 0) return null;
+    const points: ChartPoint[] = prices.map(([tsMs, close], i) => {
+      const time = Math.floor(tsMs / 1000);
+      const prevClose = i > 0 ? prices[i - 1][1] : close;
+      const open = prevClose;
+      const high = Math.max(open, close);
+      const low = Math.min(open, close);
+      return {
+        time,
+        date: new Date(tsMs).toISOString(),
+        open,
+        high,
+        low,
+        close,
+        volume: 0,
+      };
+    });
+    points.sort((a, b) => a.time - b.time);
+    return points;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchCoinGeckoPrice(ticker: string): Promise<number | null> {
+  const id = COINGECKO_IDS[ticker?.toUpperCase() ?? ""];
+  if (!id) return null;
+  try {
+    const res = await fetch(
+      `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`,
+      { next: { revalidate: 0 } }
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as Record<string, { usd?: number }>;
+    const price = data?.[id]?.usd;
+    return typeof price === "number" ? price : null;
+  } catch {
+    return null;
+  }
+}
+
+// Use daily (D) resolution so we get real OHLCV; 3M/6M use more days with D; 1Y/5Y use more days (TradingView-style: W/M → we use D + days)
 const RANGES: Record<ChartRange, { resolution: string; days: number }> = {
   "10m": { resolution: "D", days: 5 },
   "1h": { resolution: "D", days: 5 },
   "1d": { resolution: "D", days: 5 },
   "1w": { resolution: "D", days: 14 },
   "1m": { resolution: "D", days: 30 },
+  "3m": { resolution: "D", days: 90 },
+  "6m": { resolution: "D", days: 180 },
+  "1y": { resolution: "D", days: 365 },
+  "5y": { resolution: "D", days: 365 * 5 },
 };
 
 export async function GET(request: NextRequest) {
@@ -37,13 +96,24 @@ export async function GET(request: NextRequest) {
   if (!ticker) return NextResponse.json({ data: [] }, { status: 400 });
   const rangeConfig = RANGES[range] ?? RANGES["1d"];
 
+  // BTC/ETH: only use CoinGecko (id bitcoin/ethereum). Never use Finnhub — it returns wrong scale (~$32 for BTC).
+  const u = ticker.toUpperCase();
+  if (u === "BTC" || u === "ETH") {
+    const days = Math.min(rangeConfig.days, 365);
+    const coingeckoData = await fetchCoinGeckoChart(u, days);
+    if (coingeckoData && coingeckoData.length > 0) {
+      return NextResponse.json({ data: coingeckoData, range });
+    }
+    return NextResponse.json({ data: [], range });
+  }
+
   const token = process.env.FINNHUB_API_KEY;
   const symbol = toFinnhubSymbol(ticker);
   const to = Math.floor(Date.now() / 1000);
   const from = to - rangeConfig.days * 24 * 60 * 60;
 
   if (!token) {
-    return NextResponse.json({ data: [] });
+    return NextResponse.json({ data: [], range });
   }
 
   const isCrypto = symbol.startsWith("BINANCE:");
@@ -138,14 +208,24 @@ async function fallbackChart(
       data.sort((a, b) => a.time - b.time);
       if (data.length > 0) return NextResponse.json({ data, range });
     }
-    const quoteUrl = symbol.startsWith("BINANCE:")
-      ? `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${token}`
-      : `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(ticker.toUpperCase())}&token=${token}`;
-    const qRes = await fetch(quoteUrl, { next: { revalidate: 0 } });
-    if (!qRes.ok) return NextResponse.json({ data: [] });
-    const q = (await qRes.json()) as { c?: number; v?: number };
-    const close = q?.c;
-    if (close == null || typeof close !== "number") return NextResponse.json({ data: [] });
+    // For BTC/ETH use CoinGecko price so fallback chart scale is correct (~75k not ~33)
+    let close: number | null = null;
+    let volume = 0;
+    if (symbol.startsWith("BINANCE:")) {
+      const cryptoId = symbol === "BINANCE:BTCUSDT" ? "BTC" : symbol === "BINANCE:ETHUSDT" ? "ETH" : null;
+      if (cryptoId) close = await fetchCoinGeckoPrice(cryptoId);
+    }
+    if (close == null) {
+      const quoteUrl = symbol.startsWith("BINANCE:")
+        ? `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${token}`
+        : `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(ticker.toUpperCase())}&token=${token}`;
+      const qRes = await fetch(quoteUrl, { next: { revalidate: 0 } });
+      if (!qRes.ok) return NextResponse.json({ data: [], range });
+      const q = (await qRes.json()) as { c?: number; v?: number };
+      close = q?.c ?? null;
+      volume = q?.v ?? 0;
+    }
+    if (close == null || typeof close !== "number") return NextResponse.json({ data: [], range });
     const now = Math.floor(Date.now() / 1000);
     const data: ChartPoint[] = [
       {
@@ -155,7 +235,7 @@ async function fallbackChart(
         high: close,
         low: close * 0.99,
         close: close * 0.995,
-        volume: q?.v ?? 0,
+        volume,
       },
       {
         time: now,
@@ -164,11 +244,11 @@ async function fallbackChart(
         high: close,
         low: close * 0.99,
         close,
-        volume: q?.v ?? 0,
+        volume,
       },
     ];
-    return NextResponse.json({ data });
+    return NextResponse.json({ data, range });
   } catch {
-    return NextResponse.json({ data: [] });
+    return NextResponse.json({ data: [], range });
   }
 }

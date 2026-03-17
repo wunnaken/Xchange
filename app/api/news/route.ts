@@ -21,6 +21,25 @@ const CATEGORY_QUERIES: Record<string, string> = {
   earnings: "earnings OR revenue OR EPS",
 };
 
+/** Filter articles by category using keyword match on title/description (for RSS or when News API has no results). */
+function filterArticlesByCategory(
+  articles: MarketNewsArticle[],
+  category: string
+): MarketNewsArticle[] {
+  if (category === "all" || !category) return articles;
+  const query = CATEGORY_QUERIES[category];
+  if (!query) return articles;
+  const terms = query
+    .split(/\s+OR\s+/i)
+    .map((t) => t.trim().toLowerCase())
+    .filter(Boolean);
+  if (terms.length === 0) return articles;
+  return articles.filter((a) => {
+    const text = `${a.title ?? ""} ${a.description ?? ""}`.toLowerCase();
+    return terms.some((term) => text.includes(term));
+  });
+}
+
 const RSS_FEEDS = [
   "https://feeds.reuters.com/reuters/businessNews",
   "https://feeds.reuters.com/reuters/topNews",
@@ -143,23 +162,22 @@ export async function GET(request: NextRequest) {
     let raw: RawArticle[] = [];
 
     if (!apiKey) {
+      let fullList: MarketNewsArticle[];
       const rssFirst = await fetchRealHeadlinesFromRss();
       if (rssFirst.length > 0) {
         lastNewsCache = { articles: rssFirst, fetchedAt: Date.now() };
-        return NextResponse.json({
-          articles: rssFirst,
-          usingLiveFeed: false,
-          fromCache: false,
-        });
+        fullList = rssFirst;
+      } else if (lastNewsCache && Date.now() - lastNewsCache.fetchedAt < CACHE_MAX_AGE_MS) {
+        fullList = lastNewsCache.articles;
+      } else {
+        return NextResponse.json({ articles: [], usingLiveFeed: false, fromCache: false });
       }
-      if (lastNewsCache && Date.now() - lastNewsCache.fetchedAt < CACHE_MAX_AGE_MS) {
-        return NextResponse.json({
-          articles: lastNewsCache.articles,
-          usingLiveFeed: false,
-          fromCache: true,
-        });
-      }
-      return NextResponse.json({ articles: [], usingLiveFeed: false, fromCache: false });
+      const filtered = filterArticlesByCategory(fullList, category);
+      return NextResponse.json({
+        articles: filtered.length > 0 ? filtered : fullList.slice(0, 10),
+        usingLiveFeed: false,
+        fromCache: fullList === lastNewsCache?.articles,
+      });
     }
 
     if (apiKey) {
@@ -207,13 +225,16 @@ export async function GET(request: NextRequest) {
       .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
 
     if (articles.length === 0) {
-      articles = await fetchRealHeadlinesFromRss();
+      const rssFallback = await fetchRealHeadlinesFromRss();
+      articles = filterArticlesByCategory(rssFallback, category);
+      if (articles.length === 0 && rssFallback.length > 0) articles = rssFallback.slice(0, 10);
     }
 
-    if (articles.length > 0) {
+    if (articles.length > 0 && raw.length > 0) {
       lastNewsCache = { articles, fetchedAt: Date.now() };
-    } else if (lastNewsCache && Date.now() - lastNewsCache.fetchedAt < CACHE_MAX_AGE_MS) {
-      articles = lastNewsCache.articles;
+    } else if (articles.length === 0 && lastNewsCache && Date.now() - lastNewsCache.fetchedAt < CACHE_MAX_AGE_MS) {
+      articles = filterArticlesByCategory(lastNewsCache.articles, category);
+      if (articles.length === 0) articles = lastNewsCache.articles.slice(0, 10);
     }
 
     return NextResponse.json({
@@ -228,11 +249,17 @@ export async function GET(request: NextRequest) {
       const fallback = await fetchRealHeadlinesFromRss();
       if (fallback.length > 0) {
         lastNewsCache = { articles: fallback, fetchedAt: Date.now() };
-        return NextResponse.json({ articles: fallback, usingLiveFeed: false, fromCache: false });
+        const filtered = filterArticlesByCategory(fallback, category);
+        return NextResponse.json({
+          articles: filtered.length > 0 ? filtered : fallback.slice(0, 10),
+          usingLiveFeed: false,
+          fromCache: false,
+        });
       }
       if (lastNewsCache && Date.now() - lastNewsCache.fetchedAt < CACHE_MAX_AGE_MS) {
+        const filtered = filterArticlesByCategory(lastNewsCache.articles, category);
         return NextResponse.json({
-          articles: lastNewsCache.articles,
+          articles: filtered.length > 0 ? filtered : lastNewsCache.articles.slice(0, 10),
           usingLiveFeed: false,
           fromCache: true,
         });

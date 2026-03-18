@@ -29,6 +29,8 @@ type StoredPrice = {
   prevClose: number;
 };
 
+const RECONNECT_MS = 5000;
+
 export class FinnhubWebSocket {
   private ws: WebSocket | null = null;
   private subscribers = new Map<string, Set<PriceCallback>>();
@@ -37,6 +39,8 @@ export class FinnhubWebSocket {
   private token: string;
   private connectionListeners = new Set<(state: "connected" | "connecting" | "disconnected") => void>();
   private _connectionState: "connected" | "connecting" | "disconnected" = "disconnected";
+  private hasLoggedFailure = false;
+  private isReconnect = false;
 
   constructor(token: string) {
     this.token = token;
@@ -66,10 +70,14 @@ export class FinnhubWebSocket {
   private connect(): void {
     if (typeof WebSocket === "undefined") return;
     this.setConnectionState("connecting");
-    this.ws = new WebSocket(`wss://ws.finnhub.io?token=${this.token}`);
+    this.ws = new WebSocket(`wss://ws.finnhub.io?token=${encodeURIComponent(this.token)}`);
 
     this.ws.onopen = () => {
       this.setConnectionState("connected");
+      if (this.isReconnect) {
+        console.info("[Finnhub] WebSocket reconnected");
+        this.isReconnect = false;
+      }
       this.subscribers.forEach((_, appSymbol) => {
         const finnhubSymbol = toFinnhubSymbol(appSymbol);
         this.sendSubscribe(finnhubSymbol);
@@ -113,10 +121,15 @@ export class FinnhubWebSocket {
     this.ws.onclose = () => {
       this.setConnectionState("disconnected");
       this.ws = null;
-      this.reconnectTimer = setTimeout(() => this.connect(), 5000);
+      this.isReconnect = true;
+      this.reconnectTimer = setTimeout(() => this.connect(), RECONNECT_MS);
     };
 
     this.ws.onerror = () => {
+      if (!this.hasLoggedFailure) {
+        this.hasLoggedFailure = true;
+        console.warn("[Finnhub] WebSocket connection failed. Retrying every 5s silently.");
+      }
       this.ws?.close();
     };
   }
@@ -190,12 +203,19 @@ export class FinnhubWebSocket {
 }
 
 let instance: FinnhubWebSocket | null = null;
+let hasWarnedNoToken = false;
 
 export function getFinnhubWS(): FinnhubWebSocket | null {
   if (typeof window === "undefined") return null;
   if (!instance) {
     const token = process.env.NEXT_PUBLIC_FINNHUB_KEY?.trim();
-    if (!token) return null;
+    if (!token) {
+      if (!hasWarnedNoToken) {
+        hasWarnedNoToken = true;
+        console.warn("[Finnhub] NEXT_PUBLIC_FINNHUB_KEY is not set. WebSocket disabled.");
+      }
+      return null;
+    }
     instance = new FinnhubWebSocket(token);
   }
   return instance;

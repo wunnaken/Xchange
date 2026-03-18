@@ -68,11 +68,6 @@ function TickerItem({
             format="compact"
             showChange={true}
           />
-          {isCrypto && (
-            <span className="text-[10px] text-zinc-500" title={changeLabel}>
-              24h
-            </span>
-          )}
         </>
       ) : (
         <span className="text-zinc-500">—</span>

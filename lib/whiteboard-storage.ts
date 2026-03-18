@@ -18,6 +18,17 @@ export type SavedBoard = {
   updatedAt: number;
 };
 
+function toJsonSafe<T>(value: T): T {
+  return JSON.parse(
+    JSON.stringify(value, (_key, v) => {
+      if (v instanceof Map) return Object.fromEntries(v.entries());
+      if (v instanceof Set) return Array.from(v.values());
+      if (typeof v === "function") return undefined;
+      return v;
+    })
+  ) as T;
+}
+
 function getBoards(): SavedBoard[] {
   if (typeof window === "undefined") return [];
   try {
@@ -41,10 +52,11 @@ export function saveBoard(
 ): void {
   if (typeof window === "undefined") return;
   const list = getBoards().filter((b) => b.id !== id);
+  const safeScene = toJsonSafe(scene);
   list.unshift({
     id,
     name,
-    scene,
+    scene: safeScene,
     updatedAt: Date.now(),
   });
   window.localStorage.setItem(BOARDS_KEY, JSON.stringify(list.slice(0, MAX_BOARDS)));

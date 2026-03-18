@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
 
   const { data: postsRows, error: postsError } = await supabase
     .from("posts")
-    .select("id, author_id, content, created_at, comments_count")
+    .select("id, user_id, content, created_at, comments_count")
     .order("created_at", { ascending: false })
     .range(offset, offset + limit - 1);
 
@@ -22,7 +22,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Failed to load posts" }, { status: 500 });
   }
 
-  const authorIds = [...new Set((postsRows || []).map((p: { author_id: string }) => p.author_id))];
+  const authorIds = [...new Set((postsRows || []).map((p: { user_id: string }) => p.user_id))];
   const { data: profilesRows } = await supabase
     .from("profiles")
     .select("id, name, username")
@@ -33,14 +33,14 @@ export async function GET(request: NextRequest) {
     profilesById[pr.id] = { name: pr.name ?? "Trader", username: pr.username ?? pr.id.slice(0, 8) };
   }
 
-  const posts = (postsRows || []).map((p: { id: string; author_id: string; content: string; created_at: string; comments_count: number }) => {
-    const profile = profilesById[p.author_id];
+  const posts = (postsRows || []).map((p: { id: string; user_id: string; content: string; created_at: string; comments_count: number }) => {
+    const profile = profilesById[p.user_id];
     return {
       id: p.id,
-      author_id: p.author_id,
+      author_id: p.user_id,
       author: {
         name: profile?.name ?? "Trader",
-        handle: profile?.username ?? p.author_id.slice(0, 8),
+        handle: profile?.username ?? p.user_id.slice(0, 8),
         avatar: null,
       },
       content: p.content,
@@ -106,8 +106,8 @@ export async function POST(request: NextRequest) {
   const supabase = createServerClient();
   const { data: post, error } = await supabase
     .from("posts")
-    .insert({ author_id: profileId, content })
-    .select("id, author_id, content, created_at, comments_count")
+    .insert({ user_id: profileId, content })
+    .select("id, user_id, content, created_at, comments_count")
     .single();
 
   if (error) {
@@ -124,7 +124,7 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({
     post: {
       id: post.id,
-      author_id: post.author_id,
+      author_id: post.user_id,
       author: {
         name: profile?.name ?? "Trader",
         handle: profile?.username ?? profileId.slice(0, 8),

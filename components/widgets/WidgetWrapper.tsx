@@ -34,10 +34,19 @@ export function WidgetWrapper({
   const displayTitle = title ?? config?.name ?? widgetId;
 
   return (
-    <div className="flex h-full flex-col overflow-hidden rounded-lg border bg-[#0F1520] text-zinc-200" style={{ borderColor: "var(--app-border, #1a2535)" }}>
+    <div
+      className={
+        "flex h-full flex-col rounded-lg border bg-[#0F1520] text-zinc-200 " +
+        (editMode ? "overflow-hidden" : "overflow-visible widget-view-mode ") +
+        (editMode
+          ? "ring-1 ring-[var(--accent-color)]/25 shadow-[0_0_0_1px_rgba(59,130,246,0.15),0_0_18px_rgba(59,130,246,0.08)]"
+          : "")
+      }
+      style={{ borderColor: "var(--app-border, #1a2535)" }}
+    >
       <div
-        className={`widget-header flex shrink-0 items-center justify-between gap-2 border-b border-white/5 px-3 py-2 ${editMode ? "cursor-grab active:cursor-grabbing" : ""}`}
-        style={{ backgroundColor: "#080B14" }}
+        className={`widget-header widget-drag-handle flex shrink-0 items-center justify-between gap-2 border-b border-white/5 px-3 py-2 ${editMode ? "cursor-grab active:cursor-grabbing" : ""}`}
+        style={{ backgroundColor: editMode ? "#080B14" : "#0A0E1A" }}
       >
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate text-xs font-medium text-zinc-200">{displayTitle}</span>
@@ -71,8 +80,26 @@ export function WidgetWrapper({
         </div>
       )}
       {editMode && !minimized && (
-        <div className="pointer-events-none absolute bottom-0 right-0 h-4 w-4" style={{ borderRight: "2px solid var(--accent-color)", borderBottom: "2px solid var(--accent-color)", borderBottomRightRadius: 4 }} aria-hidden />
+        <div
+          className="pointer-events-none absolute bottom-0 right-0 h-3 w-3"
+          style={{
+            borderRight: "1px solid color-mix(in srgb, var(--accent-color) 60%, transparent)",
+            borderBottom: "1px solid color-mix(in srgb, var(--accent-color) 60%, transparent)",
+            borderBottomRightRadius: 4,
+            opacity: 0.9,
+          }}
+          aria-hidden
+        />
       )}
+      <style jsx global>{`
+        .widget-view-mode {
+          pointer-events: auto;
+        }
+        .widget-view-mode .widget-drag-handle {
+          pointer-events: none;
+          cursor: default;
+        }
+      `}</style>
     </div>
   );
 }

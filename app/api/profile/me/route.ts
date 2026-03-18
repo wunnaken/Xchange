@@ -26,7 +26,7 @@ export async function GET() {
   const { data, error } = await supabase
     .from("profiles")
     .select("*")
-    .eq("id", profileId)
+    .eq("user_id", profileId)
     .single();
 
   if (error || !data) {

@@ -25,12 +25,15 @@ export async function GET(request: NextRequest) {
   const authorIds = [...new Set((postsRows || []).map((p: { user_id: string }) => p.user_id))];
   const { data: profilesRows } = await supabase
     .from("profiles")
-    .select("id, name, username")
-    .in("id", authorIds);
+    .select("user_id, name, username")
+    .in("user_id", authorIds);
 
   const profilesById: Record<string, { name: string; username: string }> = {};
   for (const pr of profilesRows || []) {
-    profilesById[pr.id] = { name: pr.name ?? "Trader", username: pr.username ?? pr.id.slice(0, 8) };
+    profilesById[pr.user_id] = {
+      name: pr.name ?? "Trader",
+      username: pr.username ?? pr.user_id.slice(0, 8),
+    };
   }
 
   const posts = (postsRows || []).map((p: { id: string; user_id: string; content: string; created_at: string; comments_count: number }) => {
@@ -118,7 +121,7 @@ export async function POST(request: NextRequest) {
   const { data: profile } = await supabase
     .from("profiles")
     .select("name, username")
-    .eq("id", profileId)
+    .eq("user_id", profileId)
     .single();
 
   return NextResponse.json({

@@ -15,12 +15,12 @@ export async function GET() {
 
   let query = supabase
     .from("profiles")
-    .select("id, name, username, risk_profile")
+    .select("user_id, name, username, risk_profile")
     .limit(20)
     .order("created_at", { ascending: false });
 
   if (profileId) {
-    query = query.neq("id", profileId);
+    query = query.neq("user_id", profileId);
   }
 
   const { data, error } = await query;
@@ -31,9 +31,9 @@ export async function GET() {
   }
 
   const profiles = (data || []).map((p) => ({
-    id: p.id,
+    id: p.user_id,
     name: p.name ?? "Trader",
-    username: p.username ?? p.id.slice(0, 8),
+    username: p.username ?? p.user_id.slice(0, 8),
     risk_profile: p.risk_profile ?? "Moderate",
   }));
 

@@ -27,7 +27,7 @@ type ImfData = {
   inflation2026: number | null;
 };
 
-type NewsArticle = { title: string; source: string; url: string; publishedAt: string };
+type NewsArticle = { title: string; description: string | null; source: string; url: string; publishedAt: string };
 
 type OutlookData = {
   outlook: string;
@@ -38,6 +38,51 @@ type OutlookData = {
   risks: string[];
   sentiment: string;
 };
+
+type ProjectionBestCase = {
+  headline: string;
+  explanation: string;
+  confidence: "High" | "Medium" | "Low";
+  timeframe: string;
+};
+
+type ProjectionWorstCase = {
+  headline: string;
+  explanation: string;
+  severity: "High" | "Medium" | "Low";
+  timeframe: string;
+};
+
+type ProjectionsData = { bestCase: ProjectionBestCase; worstCase: ProjectionWorstCase };
+
+const PROJECTIONS_CACHE_KEY = "xchange-map-projections";
+const PROJECTIONS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+function getCachedProjections(country: string): ProjectionsData | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(PROJECTIONS_CACHE_KEY);
+    if (!raw) return null;
+    const store = JSON.parse(raw) as Record<string, { data: ProjectionsData; fetchedAt: number }>;
+    const entry = store[country];
+    if (!entry || Date.now() - entry.fetchedAt > PROJECTIONS_CACHE_TTL_MS) return null;
+    return entry.data;
+  } catch {
+    return null;
+  }
+}
+
+function setCachedProjections(country: string, data: ProjectionsData) {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = localStorage.getItem(PROJECTIONS_CACHE_KEY);
+    const store = (raw ? JSON.parse(raw) : {}) as Record<string, { data: ProjectionsData; fetchedAt: number }>;
+    store[country] = { data, fetchedAt: Date.now() };
+    localStorage.setItem(PROJECTIONS_CACHE_KEY, JSON.stringify(store));
+  } catch {
+    // ignore
+  }
+}
 
 function SkeletonCard() {
   return (
@@ -86,8 +131,13 @@ export function CountryDetailPanel({
   const [imfLoading, setImfLoading] = useState(true);
   const [news, setNews] = useState<NewsArticle[]>([]);
   const [newsLoading, setNewsLoading] = useState(true);
+  const [newsError, setNewsError] = useState<"none" | "rate_limit" | "empty">("none");
+  const [newsMessage, setNewsMessage] = useState<string | null>(null);
   const [outlook, setOutlook] = useState<OutlookData | null>(null);
   const [outlookLoading, setOutlookLoading] = useState(true);
+  const [projections, setProjections] = useState<ProjectionsData | null>(null);
+  const [projectionsLoading, setProjectionsLoading] = useState(false);
+  const [projectionsError, setProjectionsError] = useState(false);
 
   const flag = countryToFlag(countryName);
 
@@ -132,12 +182,29 @@ export function CountryDetailPanel({
 
   const fetchNews = useCallback(async () => {
     setNewsLoading(true);
+    setNewsError("none");
+    setNewsMessage(null);
     try {
-      const res = await fetch(`/api/map-country-news?country=${encodeURIComponent(countryName)}`, { cache: "no-store" });
+      const res = await fetch(`/api/map-news?country=${encodeURIComponent(countryName)}`, { cache: "no-store" });
       const data = await res.json();
-      setNews(res.ok ? (data?.articles ?? []) : []);
+      const articles = Array.isArray(data?.articles) ? data.articles : [];
+      setNews(articles.map((a: { title?: string; description?: string | null; source?: string; url?: string; publishedAt?: string }) => ({
+        title: a.title ?? "",
+        description: a.description ?? null,
+        source: a.source ?? "—",
+        url: a.url ?? "#",
+        publishedAt: a.publishedAt ?? "",
+      })));
+      if (data?.rateLimited) {
+        setNewsError("rate_limit");
+      } else if (articles.length === 0 && data?.message) {
+        setNewsError("empty");
+        setNewsMessage(data.message);
+      }
     } catch {
       setNews([]);
+      setNewsError("empty");
+      setNewsMessage("No recent market news found for " + countryName);
     } finally {
       setNewsLoading(false);
     }
@@ -188,6 +255,47 @@ export function CountryDetailPanel({
     }
   }, [economicLoading, economic, fetchOutlook]);
 
+  useEffect(() => {
+    if (economicLoading || imfLoading) return;
+    setProjections(null);
+    setProjectionsError(false);
+    const cached = getCachedProjections(countryName);
+    if (cached) {
+      setProjections(cached);
+      setProjectionsLoading(false);
+      return;
+    }
+    setProjectionsLoading(true);
+    const body = {
+      country: countryName,
+      gdpGrowth: economic?.gdpGrowth?.value ?? null,
+      inflation: economic?.inflation?.value ?? null,
+      unemployment: economic?.unemployment?.value ?? null,
+      gdpPerCapita: economic?.gdpPerCapita?.value ?? null,
+      imfGdp2025: imf?.gdpGrowth2025 ?? null,
+      imfGdp2026: imf?.gdpGrowth2026 ?? null,
+    };
+    fetch("/api/map-country-projections", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error("Projections failed");
+        return res.json();
+      })
+      .then((data: ProjectionsData) => {
+        setProjections(data);
+        setProjectionsError(false);
+        setCachedProjections(countryName, data);
+      })
+      .catch(() => {
+        setProjections(null);
+        setProjectionsError(true);
+      })
+      .finally(() => setProjectionsLoading(false));
+  }, [countryName, economicLoading, imfLoading, economic?.gdpGrowth?.value, economic?.inflation?.value, economic?.unemployment?.value, economic?.gdpPerCapita?.value, imf?.gdpGrowth2025, imf?.gdpGrowth2026]);
+
   const riskColorClass = (c: string) =>
     c === "green" ? "bg-[var(--accent-color)]/20 text-[var(--accent-color)]" : c === "red" ? "bg-red-500/20 text-red-400" : "bg-amber-500/20 text-amber-400";
   const sentimentClass = (s: string) =>
@@ -236,7 +344,7 @@ export function CountryDetailPanel({
               {layerHistory && layerHistory.length > 1 && (
                 <div className="mt-3">
                   <p className="text-[10px] uppercase tracking-wider text-zinc-500">5-year trend</p>
-                  <div className="mt-1 flex h-8 items-end gap-0.5">
+                  <div className="mt-1 flex h-20 items-end gap-0.5">
                     {layerHistory
                       .slice()
                       .sort((a, b) => a.year.localeCompare(b.year))
@@ -288,10 +396,13 @@ export function CountryDetailPanel({
         <section>
           <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Economic snapshot</h3>
           {economicLoading ? (
-            <div className="mt-3 grid grid-cols-2 gap-3">
-              {[1, 2, 3, 4].map((i) => (
-                <SkeletonCard key={i} />
-              ))}
+            <div className="mt-3 space-y-2">
+              <p className="text-[11px] text-zinc-500">Loading economic data…</p>
+              <div className="grid grid-cols-2 gap-3">
+                {[1, 2, 3, 4].map((i) => (
+                  <SkeletonCard key={i} />
+                ))}
+              </div>
             </div>
           ) : economic ? (
             <div className="mt-3 grid grid-cols-2 gap-3">
@@ -439,18 +550,104 @@ export function CountryDetailPanel({
 
         <div className="h-px bg-white/10" />
 
+        {/* Projections: best case + worst case */}
+        {projectionsLoading ? (
+          <section className="space-y-3">
+            <div className="animate-pulse rounded-xl border border-white/10 p-4" style={{ background: "rgba(0, 200, 150, 0.04)" }}>
+              <div className="h-4 w-1/3 rounded bg-white/10" />
+              <div className="mt-3 h-5 w-full rounded bg-white/10" />
+              <div className="mt-2 h-4 w-full rounded bg-white/10" />
+              <div className="mt-2 h-4 w-4/5 rounded bg-white/10" />
+            </div>
+            <div className="animate-pulse rounded-xl border border-white/10 p-4" style={{ background: "rgba(239, 68, 68, 0.04)" }}>
+              <div className="h-4 w-1/3 rounded bg-white/10" />
+              <div className="mt-3 h-5 w-full rounded bg-white/10" />
+              <div className="mt-2 h-4 w-full rounded bg-white/10" />
+              <div className="mt-2 h-4 w-4/5 rounded bg-white/10" />
+            </div>
+          </section>
+        ) : projectionsError ? (
+          <p className="text-sm text-zinc-500">Projection data temporarily unavailable</p>
+        ) : projections ? (
+          <section className="space-y-3">
+            {/* Most Promising Projection */}
+            <div
+              className="rounded-xl border-l-4 p-4"
+              style={{ borderLeftColor: "#00C896", background: "#0a1f0a", animation: "fadeIn 0.3s ease-out" }}
+            >
+              <div className="flex items-center gap-2">
+                <svg className="h-4 w-4 shrink-0 text-[#00C896]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                </svg>
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-[#00C896]">Most Promising Outlook</h3>
+              </div>
+              <p className="mt-2 font-semibold text-zinc-100">{projections.bestCase.headline}</p>
+              <p className="mt-1.5 text-sm leading-relaxed text-zinc-300">{projections.bestCase.explanation}</p>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className="rounded-full bg-[#00C896]/20 px-2 py-0.5 text-[10px] font-medium text-[#00C896]">
+                  {projections.bestCase.timeframe || "1-3 Year Outlook"}
+                </span>
+                <span className="rounded-full bg-[#00C896]/20 px-2 py-0.5 text-[10px] font-medium text-[#00C896]">
+                  {projections.bestCase.confidence} confidence
+                </span>
+              </div>
+            </div>
+            {/* Key Risk Scenario */}
+            <div
+              className="rounded-xl border-l-4 p-4"
+              style={{ borderLeftColor: "#EF4444", background: "#1f0a0a", animation: "fadeIn 0.3s ease-out" }}
+            >
+              <div className="flex items-center gap-2">
+                <svg className="h-4 w-4 shrink-0 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 17h8m0 0V9m0 8l-8-8-4 4-6-6" />
+                </svg>
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-red-500">Key Risk Scenario</h3>
+              </div>
+              <p className="mt-2 font-semibold text-zinc-100">{projections.worstCase.headline}</p>
+              <p className="mt-1.5 text-sm leading-relaxed text-zinc-300">{projections.worstCase.explanation}</p>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className="rounded-full px-2 py-0.5 text-[10px] font-medium text-red-400">
+                  {projections.worstCase.timeframe || "1-3 Year Risk"}
+                </span>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                    projections.worstCase.severity === "High"
+                      ? "bg-red-500/20 text-red-400"
+                      : projections.worstCase.severity === "Medium"
+                        ? "bg-amber-500/20 text-amber-400"
+                        : "bg-zinc-500/20 text-zinc-400"
+                  }`}
+                >
+                  {projections.worstCase.severity} severity
+                </span>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        <div className="h-px bg-white/10" />
+
         {/* 5. Latest news */}
         <section>
           <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Latest news</h3>
           {newsLoading ? (
             <ul className="mt-3 space-y-2">
-              {[1, 2, 3, 4].map((i) => (
-                <li key={i} className="h-16 animate-pulse rounded-lg bg-white/10" />
+              {[1, 2, 3].map((i) => (
+                <li key={i} className="animate-pulse rounded-lg border border-white/10 bg-white/5 p-3">
+                  <div className="h-4 w-full max-w-[85%] rounded bg-white/10" />
+                  <div className="mt-2 h-3 w-1/3 rounded bg-white/10" />
+                  <div className="mt-2 h-3 w-full rounded bg-white/10" />
+                  <div className="mt-1 h-3 max-w-[66%] rounded bg-white/10" />
+                </li>
               ))}
             </ul>
+          ) : newsError === "rate_limit" ? (
+            <p className="mt-3 text-sm text-amber-400">
+              News temporarily unavailable — please try again in a moment
+            </p>
           ) : news.length > 0 ? (
             <ul className="mt-3 space-y-2">
-              {news.map((a, i) => (
+              {news.slice(0, 4).map((a, i) => (
                 <li key={i}>
                   <a
                     href={a.url}
@@ -462,13 +659,28 @@ export function CountryDetailPanel({
                     <p className="mt-1 text-xs text-zinc-500">
                       {a.source} · {formatTimeAgo(a.publishedAt)}
                     </p>
+                    {a.description && (
+                      <p className="mt-1.5 line-clamp-2 text-xs text-zinc-400">{a.description}</p>
+                    )}
                     <span className="mt-1 inline-block text-xs text-[var(--accent-color)]">Read full story →</span>
                   </a>
                 </li>
               ))}
             </ul>
           ) : (
-            <p className="mt-2 text-sm text-zinc-500">Data unavailable</p>
+            <div className="mt-3 space-y-2">
+              <p className="text-sm text-zinc-500">
+                {newsMessage ?? `No recent market news found for ${countryName}`}
+              </p>
+              <a
+                href={`https://news.google.com/search?q=${encodeURIComponent(countryName + " economy market")}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-block text-xs text-[var(--accent-color)] hover:underline"
+              >
+                Search Google News →
+              </a>
+            </div>
           )}
         </section>
       </div>

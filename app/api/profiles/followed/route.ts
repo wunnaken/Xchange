@@ -27,15 +27,15 @@ export async function GET() {
   const ids = followRows.map((r) => r.followed_id);
   const { data: profiles, error: profError } = await supabase
     .from("profiles")
-    .select("id, name, username")
-    .in("id", ids);
+    .select("user_id, name, username")
+    .in("user_id", ids);
 
   if (profError) return NextResponse.json({ profiles: [] });
 
   const list = (profiles || []).map((p) => ({
-    id: p.id,
+    id: p.user_id,
     name: p.name ?? "Trader",
-    username: p.username ?? p.id.slice(0, 8),
+    username: p.username ?? p.user_id.slice(0, 8),
   }));
 
   return NextResponse.json({ profiles: list });

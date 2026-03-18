@@ -103,6 +103,7 @@ export default function WhiteboardPage() {
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [activeId, setActiveId] = useState<string>("");
   const [boardName, setBoardName] = useState("My Trading Board");
+  const [editingBoardNameId, setEditingBoardNameId] = useState<string | null>(null);
 
   const excalidrawAPIRef = useRef<{
     getSceneElements: () => unknown[];
@@ -148,6 +149,7 @@ export default function WhiteboardPage() {
     initialDataRef.current = toInitialData(b.scene);
     setActiveId(b.id);
     setBoardName(b.name);
+    setEditingBoardNameId(null);
     setLastSavedAt(
       b.updated_at ? new Date(b.updated_at).getTime() : null
     );
@@ -164,6 +166,7 @@ export default function WhiteboardPage() {
     setBoards((prev) => [newBoard, ...prev]);
     setActiveId(id);
     setBoardName("My Trading Board");
+    setEditingBoardNameId(null);
     setLastSavedAt(null);
   }, []);
 
@@ -174,6 +177,8 @@ export default function WhiteboardPage() {
       return;
     }
     setSaving(true);
+
+    const effectiveName = boardName.trim() || "My Trading Board";
     const scene = {
       elements: api.getSceneElements(),
       appState: api.getAppState(),
@@ -188,7 +193,7 @@ export default function WhiteboardPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           boardId: activeId,
-          name: boardName,
+          name: effectiveName,
           scene: payload,
         }),
       });
@@ -216,7 +221,7 @@ export default function WhiteboardPage() {
       }
 
       setLastSavedAt(Date.now());
-      const updated: Board = { id: activeId, name: boardName, scene: payload, updated_at: new Date().toISOString() };
+      const updated: Board = { id: activeId, name: effectiveName, scene: payload, updated_at: new Date().toISOString() };
       setBoards((prev) => {
         const idx = prev.findIndex((b) => b.id === activeId);
         if (idx >= 0) return prev.map((b) => (b.id === activeId ? updated : b));
@@ -224,9 +229,9 @@ export default function WhiteboardPage() {
       });
       toast.showToast("Whiteboard saved", "success");
     } catch (err) {
-      saveBoard(activeId, boardName, payload);
+      saveBoard(activeId, effectiveName, payload);
       setLastSavedAt(Date.now());
-      const updated: Board = { id: activeId, name: boardName, scene: payload, updated_at: new Date().toISOString() };
+      const updated: Board = { id: activeId, name: effectiveName, scene: payload, updated_at: new Date().toISOString() };
       setBoards((prev) => {
         const idx = prev.findIndex((b) => b.id === activeId);
         if (idx >= 0) return prev.map((b) => (b.id === activeId ? updated : b));
@@ -240,8 +245,68 @@ export default function WhiteboardPage() {
   }, [activeId, boardName, toast]);
 
   const renameActive = useCallback((name: string) => {
-    setBoardName(name.trim() || "My Trading Board");
+    // Allow empty string while editing; we'll apply default on blur/save.
+    setBoardName(name);
   }, []);
+
+  const persistBoardNameToStore = useCallback(
+    async (nextNameRaw: string) => {
+      const nextName = nextNameRaw.trim() || "My Trading Board";
+      setBoardName(nextName);
+      setEditingBoardNameId(null);
+
+      // Update sidebar immediately (optimistic UI). Scene persists alongside name.
+      setBoards((prev) =>
+        prev.map((b) => (b.id === activeId ? { ...b, name: nextName } : b))
+      );
+
+      const api = excalidrawAPIRef.current;
+      if (!api) return;
+
+      const scene = {
+        elements: api.getSceneElements(),
+        appState: api.getAppState(),
+        files: api.getFiles() ?? {},
+      };
+      const payload = serializeScene(scene);
+
+      try {
+        console.log("[whiteboard] Attempting API rename");
+        const res = await fetch("/api/whiteboard", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            boardId: activeId,
+            name: nextName,
+            scene: payload,
+          }),
+        });
+
+        let bodyText = "";
+        try {
+          bodyText = await res.text();
+        } catch {
+          bodyText = "";
+        }
+
+        console.log("[whiteboard] Rename API response:", {
+          ok: res.ok,
+          status: res.status,
+          bodyText,
+        });
+
+        if (!res.ok) throw new Error(bodyText || `HTTP ${res.status}`);
+
+        setLastSavedAt(Date.now());
+      } catch (err) {
+        console.log("[whiteboard] Rename fallback to localStorage because:", err);
+        saveBoard(activeId, nextName, payload);
+        setLastSavedAt(Date.now());
+        toast.showToast("Saved locally (rename)", "warning");
+      }
+    },
+    [activeId, toast]
+  );
 
   const deleteActive = useCallback(
     async (id: string) => {
@@ -320,12 +385,6 @@ export default function WhiteboardPage() {
               ? "Not saved yet"
               : `Last saved ${Math.floor((Date.now() - lastSavedAt) / 60000)}m ago`}
           </span>
-          <Link
-            href="/feed"
-            className="rounded p-2 text-zinc-400 hover:bg-white/5 hover:text-white"
-          >
-            ← Back
-          </Link>
         </div>
       </header>
 
@@ -354,26 +413,32 @@ export default function WhiteboardPage() {
                 >
                   <button
                     type="button"
-                    onClick={() => switchBoard(b)}
+                    onClick={() => {
+                      // Only "switch" when not already on this board.
+                      // For the active board, clicking the name area enters rename mode.
+                      if (b.id === activeId) setEditingBoardNameId(b.id);
+                      else switchBoard(b);
+                    }}
                     className="w-full text-left"
                   >
                     <span className="truncate text-sm text-zinc-200">
-                      {b.name}
+                      {b.id === activeId ? boardName : b.name}
                     </span>
                   </button>
                   <div className="mt-2 flex gap-1">
-                    <input
-                      value={b.id === activeId ? boardName : b.name}
-                      onChange={(e) =>
-                        b.id === activeId && renameActive(e.target.value)
-                      }
-                      onBlur={() =>
-                        b.id === activeId &&
-                        renameActive(boardName.trim() || "My Trading Board")
-                      }
-                      disabled={b.id !== activeId}
-                      className="min-w-0 flex-1 rounded border border-white/10 bg-black/20 px-2 py-1 text-xs text-zinc-300 outline-none disabled:opacity-70"
-                    />
+                    {b.id === activeId && editingBoardNameId === b.id ? (
+                      <input
+                        autoFocus
+                        value={boardName}
+                        onChange={(e) => renameActive(e.target.value)}
+                        onBlur={() => persistBoardNameToStore(boardName)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                          if (e.key === "Escape") setEditingBoardNameId(null);
+                        }}
+                        className="min-w-0 flex-1 rounded border border-white/10 bg-black/20 px-2 py-1 text-xs text-zinc-300 outline-none"
+                      />
+                    ) : null}
                     <button
                       type="button"
                       onClick={() => deleteActive(b.id)}
@@ -398,7 +463,7 @@ export default function WhiteboardPage() {
         </aside>
 
         <main className="relative min-h-0 flex-1">
-          <div className="absolute left-4 top-4 z-10 rounded border border-white/10 bg-[#0F1520]/90 px-3 py-2 text-xs text-zinc-400 shadow-lg">
+          <div className="absolute bottom-4 left-1/2 z-10 w-[90%] -translate-x-1/2 rounded border border-white/10 bg-[#0F1520]/90 px-3 py-2 text-xs text-zinc-400 shadow-lg">
             <p className="font-medium text-zinc-200">Save Whiteboard</p>
             <p className="mt-1 max-w-sm">
               Click Save to persist to Supabase. No auto-save.

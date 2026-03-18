@@ -9,7 +9,6 @@ import { XchangeLogoIcon } from "../../components/XchangeLogoIcon";
 import { AiMarkdown } from "../../components/AiMarkdown";
 import {
   getStoredConversations,
-  saveConversation,
   deleteConversation,
   getPortfolioContext,
   setPortfolioContext,
@@ -72,7 +71,38 @@ function detectTopic(lastContent: string): string | null {
   return null;
 }
 
+type ChatMessageForDb = { role: "user" | "assistant"; content: string };
+
+function titleFromMessages(messages: ChatMessageForDb[]): string {
+  const firstUser = messages.find((m) => m.role === "user");
+  const raw = (firstUser?.content ?? "").trim();
+  if (!raw) return "New chat";
+  const trimmed = raw.slice(0, 50);
+  return raw.length > 50 ? `${trimmed}...` : trimmed;
+}
+
+function formatTimeAgo(input: string | number | null | undefined): string {
+  const ms =
+    typeof input === "number"
+      ? input
+      : input
+        ? new Date(input).getTime()
+        : NaN;
+  if (!Number.isFinite(ms)) return "—";
+  const diff = Date.now() - ms;
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const d = Math.floor(hr / 24);
+  return `${d}d ago`;
+}
+
 const AI_SHARE_KEY = "xchange-ai-share";
+const AI_PANEL_STATE_KEY = "xchange-ai-panel-state";
+const AI_LOCAL_CONVERSATIONS_KEY = "xchange-ai-conversations";
 
 export default function AIPage() {
   const router = useRouter();
@@ -82,18 +112,57 @@ export default function AIPage() {
   const [inputValue, setInputValue] = useState("");
   const [loading, setLoading] = useState(false);
   const [topicBadge, setTopicBadge] = useState<string | null>(null);
-  const [leftPanelOpen, setLeftPanelOpen] = useState(true);
-  const [recentPanelOpen, setRecentPanelOpen] = useState(true);
+  const [leftPanelOpen, setLeftPanelOpen] = useState(() => {
+    if (typeof window === "undefined") return true;
+    try {
+      const saved = window.localStorage.getItem(AI_PANEL_STATE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved) as { leftOpen?: boolean; rightOpen?: boolean };
+        return parsed.leftOpen ?? true;
+      }
+    } catch {
+      // ignore
+    }
+    return true;
+  });
+  const [recentPanelOpen, setRecentPanelOpen] = useState(() => {
+    if (typeof window === "undefined") return true;
+    try {
+      const saved = window.localStorage.getItem(AI_PANEL_STATE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved) as { leftOpen?: boolean; rightOpen?: boolean };
+        return parsed.rightOpen ?? true;
+      }
+    } catch {
+      // ignore
+    }
+    return true;
+  });
+  const [autoSaving, setAutoSaving] = useState(false);
+  const [autoSaveFailed, setAutoSaveFailed] = useState(false);
+  const [autoSaveRetryInSec, setAutoSaveRetryInSec] = useState<number | null>(null);
   const [portfolioModalOpen, setPortfolioModalOpen] = useState(false);
   const [portfolioContext, setPortfolioContextState] = useState("");
   const [followUps, setFollowUps] = useState<Record<string, string[]>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [recentChats, setRecentChats] = useState<StoredConversation[]>([]);
   const [loadedConversationId, setLoadedConversationId] = useState<string | null>(null);
+  const [renamingConversationId, setRenamingConversationId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
   const [deleteConfirmConv, setDeleteConfirmConv] = useState<StoredConversation | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const retryTimerRef = useRef<number | null>(null);
+  const pendingPersistRef = useRef<{
+    id?: string;
+    title: string;
+    messages: ChatMessageForDb[];
+  } | null>(null);
+  const persistInFlightRef = useRef(false);
+  const loadedConversationIdRef = useRef<string | null>(null);
+  loadedConversationIdRef.current = loadedConversationId;
 
   const scrollToBottom = useCallback(() => {
     const el = messagesScrollRef.current;
@@ -105,8 +174,108 @@ export default function AIPage() {
   }, []);
 
   useEffect(() => {
-    setRecentChats(getStoredConversations());
-  }, [messages]);
+    let didMigrate = false;
+    const init = async () => {
+      const localConvs = getStoredConversations();
+
+      // Try Supabase first
+      try {
+        const res = await fetch("/api/ai-conversations", { cache: "no-store" });
+        if (!res.ok) throw new Error(`api ${res.status}`);
+        const json = (await res.json()) as { conversations?: Array<any> };
+        const rows = Array.isArray(json.conversations) ? json.conversations : [];
+
+        const mapped: StoredConversation[] = rows
+          .slice(0, 10)
+          .map((r) => ({
+          id: String(r.id),
+          label: r.title ?? "New chat",
+          messages: (r.messages ?? []) as Array<{ role: "user" | "assistant"; content: string }>,
+          at: r.updated_at
+            ? new Date(r.updated_at).getTime()
+            : r.created_at
+              ? new Date(r.created_at).getTime()
+              : Date.now(),
+        }));
+
+        setRecentChats(mapped);
+
+        // Migration: move localStorage conversations into Supabase once.
+        if (localConvs.length > 0) {
+          didMigrate = true;
+          let allSaved = true;
+          for (const conv of localConvs) {
+            try {
+              const saveRes = await fetch("/api/ai-conversations", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  title: conv.label,
+                  messages: conv.messages,
+                }),
+              });
+              if (!saveRes.ok) throw new Error(`save ${saveRes.status}`);
+              // eslint-disable-next-line no-await-in-loop
+            } catch {
+              allSaved = false;
+            }
+          }
+
+          if (allSaved) {
+            window.localStorage.removeItem(AI_LOCAL_CONVERSATIONS_KEY);
+            const refetch = await fetch("/api/ai-conversations", { cache: "no-store" });
+            if (refetch.ok) {
+              const refetchJson = (await refetch.json()) as { conversations?: Array<any> };
+              const refetchRows = Array.isArray(refetchJson.conversations) ? refetchJson.conversations : [];
+              setRecentChats(
+                refetchRows.slice(0, 10).map((r) => ({
+                  id: String(r.id),
+                  label: r.title ?? "New chat",
+                  messages: (r.messages ?? []) as Array<{ role: "user" | "assistant"; content: string }>,
+                  at: r.updated_at
+                    ? new Date(r.updated_at).getTime()
+                    : r.created_at
+                      ? new Date(r.created_at).getTime()
+                      : Date.now(),
+                }))
+              );
+            }
+          }
+        }
+      } catch {
+        // Supabase unavailable: fall back to localStorage
+        setRecentChats(localConvs);
+      }
+    };
+
+    init();
+    return () => {
+      void didMigrate;
+    };
+  }, []);
+
+  // Persist panel open/collapsed state
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        AI_PANEL_STATE_KEY,
+        JSON.stringify({ leftOpen: leftPanelOpen, rightOpen: recentPanelOpen })
+      );
+    } catch {
+      // ignore
+    }
+
+    // Best-effort: store in profiles.ui_preferences (if the column + endpoint exist)
+    fetch("/api/profile/ui-preferences", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        aiPanels: { leftOpen: leftPanelOpen, rightOpen: recentPanelOpen },
+      }),
+    }).catch(() => {
+      // ignore
+    });
+  }, [leftPanelOpen, recentPanelOpen]);
 
   useEffect(() => {
     scrollToBottom();
@@ -118,6 +287,91 @@ export default function AIPage() {
     ta.style.height = "auto";
     ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
   }, [inputValue]);
+
+  const persistConversationAutosave = useCallback(
+    async (opts: {
+      id?: string | null;
+      title: string;
+      messages: ChatMessageForDb[];
+    }) => {
+      const shouldActivate = opts.id
+        ? loadedConversationIdRef.current === opts.id
+        : loadedConversationIdRef.current === null;
+
+      const payload = {
+        id: opts.id ?? undefined,
+        title: opts.title,
+        messages: opts.messages,
+      };
+
+      // Keep latest payload for retries.
+      pendingPersistRef.current = payload;
+
+      if (persistInFlightRef.current) return;
+      persistInFlightRef.current = true;
+      if (shouldActivate) {
+        setAutoSaving(true);
+        setAutoSaveFailed(false);
+        setAutoSaveRetryInSec(null);
+      }
+
+      try {
+        const res = await fetch("/api/ai-conversations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        const json = (await res.json().catch(() => ({}))) as { conversation?: any; error?: string };
+        if (!res.ok) throw new Error(json.error || `api ${res.status}`);
+
+        const conv = json.conversation;
+        if (!conv) throw new Error("Missing conversation in response");
+
+        const mapped: StoredConversation = {
+          id: String(conv.id),
+          label: conv.title ?? opts.title,
+          messages: (conv.messages ?? []) as Array<{ role: "user" | "assistant"; content: string }>,
+          at: conv.updated_at
+            ? new Date(conv.updated_at).getTime()
+            : conv.created_at
+              ? new Date(conv.created_at).getTime()
+              : Date.now(),
+        };
+
+        if (shouldActivate) setLoadedConversationId(mapped.id);
+        setRecentChats((prev) => {
+          const next = prev.filter((c) => c.id !== mapped.id);
+          next.unshift(mapped);
+          return next.sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).slice(0, 10);
+        });
+      } catch (e) {
+        if (shouldActivate) {
+          setAutoSaveFailed(true);
+          setAutoSaveRetryInSec(30);
+
+          // Retry after 30s
+          if (!retryTimerRef.current) {
+            retryTimerRef.current = window.setTimeout(async () => {
+              retryTimerRef.current = null;
+              const latest = pendingPersistRef.current;
+              if (!latest) return;
+              await persistConversationAutosave({
+                id: latest.id ?? null,
+                title: latest.title,
+                messages: latest.messages,
+              });
+            }, 30000);
+          }
+        }
+      } finally {
+        if (shouldActivate) setAutoSaving(false);
+        persistInFlightRef.current = false;
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
 
   const sendMessage = useCallback(
     async (content: string) => {
@@ -150,10 +404,23 @@ export default function AIPage() {
         const data = (await res.json()) as { content?: string; followUps?: string[]; error?: string };
         if (!res.ok) {
           const err = data.error || "Something went wrong";
+          const assistantContent = `Sorry, I couldn’t complete that. ${err}`;
+          const finalDbMessages: ChatMessageForDb[] = [
+            ...nextMessages.map((m) => ({ role: m.role, content: m.content })),
+            { role: "assistant", content: assistantContent },
+          ];
+
           setMessages((prev) => [
             ...prev,
-            { role: "assistant", content: `Sorry, I couldn’t complete that. ${err}`, id: `a-${Date.now()}` },
+            { role: "assistant", content: assistantContent, id: `a-${Date.now()}` },
           ]);
+
+          const title = titleFromMessages(finalDbMessages);
+          await persistConversationAutosave({
+            id: loadedConversationId,
+            title,
+            messages: finalDbMessages,
+          });
           return;
         }
         const assistantId = `a-${Date.now()}`;
@@ -166,21 +433,43 @@ export default function AIPage() {
         }
         const lastContent = data.content ?? "";
         setTopicBadge(detectTopic(lastContent));
-        saveConversation([...nextMessages, { role: "assistant", content: lastContent }]);
+        const finalDbMessages: ChatMessageForDb[] = [
+          ...nextMessages.map((m) => ({ role: m.role, content: m.content })),
+          { role: "assistant", content: lastContent },
+        ];
+
+        const title = titleFromMessages(finalDbMessages);
+        await persistConversationAutosave({
+          id: loadedConversationId,
+          title,
+          messages: finalDbMessages,
+        });
       } catch (e) {
+        const assistantContent = "Sorry, I couldn’t reach the server. Please try again.";
+        const finalDbMessages: ChatMessageForDb[] = [
+          ...nextMessages.map((m) => ({ role: m.role, content: m.content })),
+          { role: "assistant", content: assistantContent },
+        ];
         setMessages((prev) => [
           ...prev,
           {
             role: "assistant",
-            content: "Sorry, I couldn’t reach the server. Please try again.",
+            content: assistantContent,
             id: `a-${Date.now()}`,
           },
         ]);
+
+        const title = titleFromMessages(finalDbMessages);
+        await persistConversationAutosave({
+          id: loadedConversationId,
+          title,
+          messages: finalDbMessages,
+        });
       } finally {
         setLoading(false);
       }
     },
-    [messages, loading]
+    [messages, loading, loadedConversationId, persistConversationAutosave]
   );
 
   const handleSubmit = useCallback(
@@ -206,39 +495,134 @@ export default function AIPage() {
     setTopicBadge(null);
     setFollowUps({});
     setLoadedConversationId(null);
+    setRenamingConversationId(null);
+    setRenameValue("");
+    setAutoSaveFailed(false);
+    setAutoSaving(false);
+    setAutoSaveRetryInSec(null);
+    pendingPersistRef.current = null;
   }, []);
 
-  const loadConversation = useCallback((conv: StoredConversation) => {
-    setMessages(
-      conv.messages.map((m, i) => ({
-        role: m.role,
-        content: m.content,
-        id: `${m.role}-${conv.id}-${i}`,
-      }))
-    );
-    const lastAi = conv.messages.filter((m) => m.role === "assistant").pop();
-    setTopicBadge(lastAi ? detectTopic(lastAi.content) : null);
-    setFollowUps({});
-    setLoadedConversationId(conv.id);
+  const loadConversation = useCallback(async (conv: StoredConversation) => {
+    const fallback = () => {
+      setMessages(
+        conv.messages.map((m, i) => ({
+          role: m.role,
+          content: m.content,
+          id: `${m.role}-${conv.id}-${i}`,
+        }))
+      );
+      const lastAi = conv.messages.filter((m) => m.role === "assistant").pop();
+      setTopicBadge(lastAi ? detectTopic(lastAi.content) : null);
+      setFollowUps({});
+      setLoadedConversationId(conv.id);
+    };
+
+    // Requirement: load from Supabase when possible.
+    try {
+      const res = await fetch("/api/ai-conversations", { cache: "no-store" });
+      if (!res.ok) throw new Error(`api ${res.status}`);
+      const json = (await res.json()) as { conversations?: Array<any> };
+      const rows = Array.isArray(json.conversations) ? json.conversations : [];
+      const row = rows.find((r) => String(r.id) === String(conv.id));
+      if (!row) return fallback();
+      const msgs = (row.messages ?? []) as Array<{ role: "user" | "assistant"; content: string }>;
+      setMessages(
+        msgs.map((m, i) => ({
+          role: m.role,
+          content: m.content,
+          id: `${m.role}-${row.id}-${i}`,
+        }))
+      );
+      const lastAi = msgs.filter((m) => m.role === "assistant").pop();
+      setTopicBadge(lastAi ? detectTopic(lastAi.content) : null);
+      setFollowUps({});
+      setLoadedConversationId(String(row.id));
+    } catch {
+      fallback();
+    }
   }, []);
 
   const confirmDeleteConversation = useCallback((conv: StoredConversation) => {
     setDeleteConfirmConv(conv);
   }, []);
 
-  const doDeleteConversation = useCallback(() => {
+  const doDeleteConversation = useCallback(async () => {
     if (!deleteConfirmConv) return;
     const id = deleteConfirmConv.id;
-    deleteConversation(id);
-    setRecentChats((prev) => prev.filter((x) => x.id !== id));
-    if (loadedConversationId === id) {
-      setMessages([]);
-      setTopicBadge(null);
-      setFollowUps({});
-      setLoadedConversationId(null);
+    let deletedOk = false;
+    try {
+      const res = await fetch(
+        `/api/ai-conversations?id=${encodeURIComponent(id)}`,
+        { method: "DELETE" }
+      );
+      if (!res.ok) throw new Error(`api ${res.status}`);
+      deletedOk = true;
+    } catch {
+      // Local fallback: remove from localStorage.
+      const local = getStoredConversations();
+      const hasLocal = local.some((x) => x.id === id);
+      if (hasLocal) {
+        deleteConversation(id);
+        deletedOk = true;
+      }
+    }
+
+    if (deletedOk) {
+      setRecentChats((prev) => prev.filter((x) => x.id !== id));
+      if (loadedConversationId === id) {
+        setMessages([]);
+        setTopicBadge(null);
+        setFollowUps({});
+        setLoadedConversationId(null);
+      }
     }
     setDeleteConfirmConv(null);
   }, [deleteConfirmConv, loadedConversationId]);
+
+  const renameConversation = useCallback(
+    async (conv: StoredConversation, nextTitleRaw: string) => {
+      const nextTitle = nextTitleRaw.trim() || conv.label;
+      try {
+        const res = await fetch("/api/ai-conversations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: conv.id,
+            title: nextTitle,
+            messages: conv.messages,
+          }),
+        });
+        if (!res.ok) throw new Error(`api ${res.status}`);
+        const json = (await res.json().catch(() => ({}))) as { conversation?: any; error?: string };
+        const saved = json.conversation;
+        if (!saved) throw new Error("No conversation returned");
+
+        const mapped: StoredConversation = {
+          id: String(saved.id),
+          label: saved.title ?? nextTitle,
+          messages: (saved.messages ?? []) as Array<{ role: "user" | "assistant"; content: string }>,
+          at: saved.updated_at
+            ? new Date(saved.updated_at).getTime()
+            : saved.created_at
+              ? new Date(saved.created_at).getTime()
+              : conv.at,
+        };
+
+        setRecentChats((prev) => {
+          const next = prev.filter((c) => c.id !== mapped.id);
+          next.unshift(mapped);
+          return next.sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).slice(0, 10);
+        });
+      } catch {
+        // If rename fails, keep UI in rename mode so user can try again.
+      } finally {
+        setRenamingConversationId(null);
+        setRenameValue("");
+      }
+    },
+    []
+  );
 
   const savePortfolioContext = useCallback((value: string) => {
     setPortfolioContext(value);
@@ -349,32 +733,105 @@ export default function AIPage() {
           </div>
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto p-2">
-          {recentChats.map((c) => (
-            <div
-              key={c.id}
-              className="group flex items-center gap-0.5 rounded-lg hover:bg-white/5"
-            >
-              <button
-                type="button"
-                onClick={() => loadConversation(c)}
-                className="min-w-0 flex-1 truncate px-2 py-2 text-left text-xs text-zinc-400 hover:text-zinc-200"
-                title={c.label}
-              >
-                {c.label}
-              </button>
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); confirmDeleteConversation(c); }}
-                className="shrink-0 rounded p-1.5 text-zinc-500 opacity-0 transition hover:bg-white/5 hover:text-red-400 group-hover:opacity-100"
-                aria-label={`Delete "${c.label.slice(0, 30)}..."`}
-                title="Delete conversation"
-              >
-                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-              </button>
-            </div>
-          ))}
+          {recentChats.length === 0 ? (
+            <p className="px-2 py-3 text-xs text-zinc-500">No previous chats yet</p>
+          ) : (
+            recentChats.map((c) => {
+              const isActive = c.id === loadedConversationId;
+              const isRenaming = c.id === renamingConversationId;
+              return (
+                <div
+                  key={c.id}
+                  onClick={() => loadConversation(c)}
+                  className={`group flex items-center gap-0.5 rounded-lg px-1 hover:bg-white/5 ${
+                    isActive ? "border border-[var(--accent-color)]/30 bg-white/5" : ""
+                  }`}
+                >
+                  <div className="min-w-0 flex-1 py-2 pl-2">
+                    {isRenaming ? (
+                      <input
+                        autoFocus
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onBlur={() => renameConversation(c, renameValue)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                          if (e.key === "Escape") {
+                            setRenamingConversationId(null);
+                            setRenameValue("");
+                          }
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-full rounded border border-white/10 bg-black/30 px-2 py-1 text-xs text-zinc-100 outline-none focus:border-[var(--accent-color)]"
+                      />
+                    ) : (
+                      <div className="flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            loadConversation(c);
+                          }}
+                          className="min-w-0 flex-1 text-left"
+                          title={c.label}
+                        >
+                          <div
+                            className={`truncate text-xs ${
+                              isActive ? "text-zinc-200" : "text-zinc-400"
+                            } hover:text-zinc-200`}
+                          >
+                            {c.label}
+                          </div>
+                        </button>
+
+                        <div
+                          className="flex shrink-0 items-center rounded p-0.5 text-zinc-500 opacity-0 transition group-hover:opacity-100"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setRenamingConversationId(c.id);
+                              setRenameValue(c.label);
+                            }}
+                            className="rounded p-1.5 transition hover:bg-white/5 hover:text-zinc-200"
+                            aria-label={`Rename "${c.label}"`}
+                            title="Rename"
+                          >
+                            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                              <path d="M12 20h9" />
+                              <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                            </svg>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              confirmDeleteConversation(c);
+                            }}
+                            className="rounded p-1.5 transition hover:bg-white/5 hover:text-red-400"
+                            aria-label={`Delete "${c.label.slice(0, 30)}..."`}
+                            title="Delete conversation"
+                          >
+                            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {!isRenaming && (
+                      <div className="mt-0.5 text-[10px] text-zinc-500">
+                        {formatTimeAgo(c.at)}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })
+          )}
           {deleteConfirmConv && (
             <div className="mt-2 flex gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2">
               <span className="shrink-0 text-amber-400" aria-hidden>
@@ -436,6 +893,16 @@ export default function AIPage() {
             <span className="rounded bg-white/5 px-2 py-0.5 text-[10px] text-zinc-500">
               Powered by Claude
             </span>
+            {autoSaving && (
+              <span className="rounded bg-white/5 px-2 py-0.5 text-[10px] text-zinc-400">
+                saving...
+              </span>
+            )}
+            {autoSaveFailed && !autoSaving && (
+              <span className="rounded bg-amber-500/15 px-2 py-0.5 text-[10px] text-amber-400">
+                Auto-save failed{autoSaveRetryInSec ? `, retrying in ${autoSaveRetryInSec}s` : ""}
+              </span>
+            )}
           </div>
           </header>
           {/* Reopen panels: just under "AI Assistant" header (desktop only) */}

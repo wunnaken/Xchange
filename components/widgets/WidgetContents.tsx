@@ -9,9 +9,9 @@ import { loadStreaks } from "../../lib/engagement/streaks";
 import { loadXP, getRankTitle } from "../../lib/engagement/xp";
 import { getTrades, computePnL, formatCurrency } from "../../lib/journal";
 import { getPoints, loadBets, loadMarkets, type PredictMarket } from "../../lib/predict";
-import { getStoredConversations } from "../../lib/ai-chat-storage";
+import { getStoredConversations, saveConversation, getPortfolioContext } from "../../lib/ai-chat-storage";
 import { useAuth } from "../AuthContext";
-import { fetchWatchlist, type WatchlistItem } from "../../lib/watchlist-api";
+import { fetchWatchlist, addToWatchlistApi, type WatchlistItem } from "../../lib/watchlist-api";
 import { useLivePrices } from "../../lib/hooks/useLivePrice";
 import { PriceDisplay } from "../PriceDisplay";
 
@@ -20,19 +20,81 @@ type WidgetContentProps = { widgetId: WidgetId; onLoaded?: () => void };
 export function WatchlistWidget({ onLoaded }: WidgetContentProps) {
   const [items, setItems] = useState<WatchlistItem[]>([]);
   const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    fetchWatchlist().then((list) => { setItems(list); setLoading(false); onLoaded?.(); }).catch(() => { setLoading(false); onLoaded?.(); });
+  const [addInput, setAddInput] = useState("");
+
+  const refresh = useCallback(async () => {
+    try {
+      const list = await fetchWatchlist();
+      setItems(list);
+    } finally {
+      setLoading(false);
+      onLoaded?.();
+    }
   }, [onLoaded]);
+
+  useEffect(() => {
+    refresh();
+  }, [onLoaded]);
+
+  const addTicker = useCallback(async () => {
+    const ticker = addInput.trim().toUpperCase();
+    if (!ticker) return;
+    setAddInput("");
+    setLoading(true);
+    try {
+      await addToWatchlistApi({ ticker });
+    } catch {
+      // If API fails, watchlist helper already falls back to localStorage.
+    } finally {
+      await refresh();
+    }
+  }, [addInput, refresh]);
+
   if (loading) return null;
   return (
-    <div className="space-y-1 p-2">
-      {items.slice(0, 8).map((i) => (
-        <Link key={i.ticker} href={`/search/${i.ticker}`} className="flex items-center justify-between rounded px-2 py-1.5 text-xs hover:bg-white/5">
-          <span className="font-medium text-zinc-200">{i.ticker}</span>
-          <span className={typeof i.change === "number" && i.change >= 0 ? "text-emerald-400" : "text-red-400"}>{i.price != null ? String(i.price) : "—"} {i.change != null ? `${i.change >= 0 ? "+" : ""}${i.change}%` : ""}</span>
-        </Link>
-      ))}
-      <Link href="/watchlist" className="mt-2 block rounded border border-dashed border-white/10 px-2 py-1.5 text-center text-[11px] text-zinc-500 hover:border-[var(--accent-color)] hover:text-[var(--accent-color)]">Add ticker</Link>
+    <div className="flex h-full min-h-0 flex-col p-2">
+      <div className="min-h-0 flex-1 overflow-y-auto space-y-1">
+        {items.map((i) => (
+          <Link
+            key={i.ticker}
+            href={`/search/${i.ticker}`}
+            className="flex items-center justify-between gap-2 rounded px-2 py-1.5 text-xs hover:bg-white/5"
+          >
+            <span className="min-w-0 truncate font-medium text-zinc-200">{i.ticker}</span>
+            <span
+              className={
+                typeof i.change === "number" && i.change >= 0 ? "text-emerald-400" : "text-red-400"
+              }
+            >
+              {i.price != null ? String(i.price) : "—"}{" "}
+              {i.change != null ? `${i.change >= 0 ? "+" : ""}${i.change}%` : ""}
+            </span>
+          </Link>
+        ))}
+      </div>
+
+      <div className="mt-2 flex shrink-0 gap-1">
+        <input
+          type="text"
+          value={addInput}
+          onChange={(e) => setAddInput(e.target.value)}
+          placeholder="Add ticker"
+          className="min-w-0 flex-1 rounded border border-white/10 bg-white/5 px-2 py-1 text-xs text-zinc-100 placeholder:text-zinc-500 outline-none"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addTicker();
+            }
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => addTicker()}
+          className="rounded bg-[var(--accent-color)] px-2 py-1 text-xs font-medium text-[#020308]"
+        >
+          Add
+        </button>
+      </div>
     </div>
   );
 }
@@ -45,7 +107,7 @@ export function MarketOverviewWidget({ onLoaded }: WidgetContentProps) {
   useEffect(() => {
     fetch("/api/market-tickers").then((r) => r.json()).then((d) => {
       const arr = Array.isArray(d) ? d : (d?.tickers ?? []);
-      setData(arr.slice(0, 8).map((t: { symbol: string; name?: string; price: number; changePercent?: number }) => ({ symbol: t.symbol, name: t.name ?? t.symbol, price: t.price, changePercent: t.changePercent ?? 0 })));
+      setData(arr.slice(0, 20).map((t: { symbol: string; name?: string; price: number; changePercent?: number }) => ({ symbol: t.symbol, name: t.name ?? t.symbol, price: t.price, changePercent: t.changePercent ?? 0 })));
       setLoading(false);
       onLoaded?.();
     }).catch(() => { setLoading(false); onLoaded?.(); });
@@ -55,21 +117,45 @@ export function MarketOverviewWidget({ onLoaded }: WidgetContentProps) {
   if (loading && data.length === 0) return null;
   const list = data.length > 0 ? data : DEFAULT_MARKET_SYMBOLS.map((s) => ({ symbol: s, name: s, price: 0, changePercent: 0 }));
   return (
-    <div className="space-y-1 p-2">
-      {list.map((t) => {
-        const l = live[t.symbol];
-        return (
-          <div key={t.symbol} className="flex justify-between text-xs">
-            <span className="text-zinc-400">{t.symbol}</span>
-            {l?.price != null ? (
-              <PriceDisplay price={l.price} change={l.change} changePercent={l.changePercent} symbol={t.symbol} format="compact" showChange={true} />
-            ) : (
-              <span className={t.changePercent >= 0 ? "text-emerald-400" : "text-red-400"}>{t.price} ({t.changePercent >= 0 ? "+" : ""}{t.changePercent.toFixed(2)}%)</span>
-            )}
-          </div>
-        );
-      })}
-      <p className="mt-1 text-[10px] text-zinc-500">Market Open · Live</p>
+    <div className="flex h-full min-h-0 flex-col p-2">
+      <div className="min-h-0 flex-1 overflow-y-auto space-y-1">
+        {list.map((t) => {
+          const l = live[t.symbol];
+          return (
+            <div
+              key={t.symbol}
+              className="flex items-center justify-between gap-2 text-xs"
+            >
+              <span className="min-w-0 truncate text-zinc-400">{t.symbol}</span>
+              {l?.price != null ? (
+                <PriceDisplay
+                  price={l.price}
+                  change={l.change}
+                  changePercent={l.changePercent}
+                  symbol={t.symbol}
+                  format="compact"
+                  showChange={true}
+                  className="justify-end"
+                  priceClassName=""
+                  changeClassName={t.changePercent >= 0 ? "text-emerald-400" : "text-red-400"}
+                />
+              ) : (
+                <span
+                  className={
+                    "text-right " + (t.changePercent >= 0 ? "text-emerald-400" : "text-red-400")
+                  }
+                >
+                  {t.price} ({t.changePercent >= 0 ? "+" : ""}
+                  {t.changePercent.toFixed(2)}%)
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-2 shrink-0 text-[10px] text-zinc-500">
+        Market Open · Live
+      </p>
     </div>
   );
 }
@@ -82,9 +168,13 @@ export function FearGreedWidget({ onLoaded }: WidgetContentProps) {
   const label = score == null ? "—" : score <= 25 ? "Extreme Fear" : score <= 45 ? "Fear" : score <= 55 ? "Neutral" : score <= 75 ? "Greed" : "Extreme Greed";
   const needleAngle = score != null ? -90 + (score / 100) * 180 : -90;
   return (
-    <div className="flex flex-col items-center justify-center p-2">
-      <div className="relative h-24 w-full max-w-[180px] overflow-visible">
-        <svg viewBox="-8 -12 216 112" className="h-full w-full overflow-visible" preserveAspectRatio="xMidYMid meet">
+    <div className="flex h-full min-h-0 flex-col items-center justify-center p-2">
+      <div className="flex-1 min-h-0 w-full overflow-visible">
+        <svg
+          viewBox="-8 -12 216 112"
+          className="w-full h-auto overflow-visible"
+          preserveAspectRatio="xMidYMid meet"
+        >
           <defs>
             <linearGradient id="fgGradWidget" x1="0%" y1="0%" x2="100%" y2="0%">
               <stop offset="0%" stopColor="#EF4444" />
@@ -99,7 +189,9 @@ export function FearGreedWidget({ onLoaded }: WidgetContentProps) {
           </g>
         </svg>
       </div>
-      <p className="mt-1 text-xl font-bold text-white">{score ?? "—"}</p>
+      <p className="mt-1 text-[clamp(18px,3.6vw,26px)] font-bold text-white">
+        {score ?? "—"}
+      </p>
       <p className="text-[10px] text-zinc-500">{label}</p>
     </div>
   );
@@ -108,18 +200,24 @@ export function FearGreedWidget({ onLoaded }: WidgetContentProps) {
 export function StreaksWidget() {
   const s = typeof window !== "undefined" ? loadStreaks() : { loginStreak: 0, journalStreak: 0, briefingStreak: 0 };
   return (
-    <div className="flex h-full flex-col justify-center gap-3 p-3">
-      <div className="rounded-lg border border-[var(--accent-color)]/30 bg-[var(--accent-color)]/10 p-4 text-center">
-        <p className="text-4xl font-bold tabular-nums text-[var(--accent-color)]">{s.loginStreak}</p>
+    <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 p-3">
+      <div className="rounded-lg border border-[var(--accent-color)]/30 bg-[var(--accent-color)]/10 px-3 py-4 text-center w-full">
+        <p className="text-[clamp(28px,3vw,44px)] font-bold tabular-nums text-[var(--accent-color)]">
+          {s.loginStreak}
+        </p>
         <p className="mt-1 text-xs font-medium uppercase tracking-wider text-zinc-400">Login streak</p>
       </div>
-      <div className="grid grid-cols-2 gap-2">
-        <div className="rounded-lg border border-white/10 bg-white/5 p-3 text-center">
-          <p className="text-2xl font-bold tabular-nums text-zinc-200">{s.journalStreak}</p>
+      <div className="min-h-0 flex-1 w-full grid grid-cols-2 gap-2">
+        <div className="flex flex-col justify-center rounded-lg border border-white/10 bg-white/5 p-3 text-center min-h-0">
+          <p className="text-[clamp(22px,2.4vw,34px)] font-bold tabular-nums text-zinc-200">
+            {s.journalStreak}
+          </p>
           <p className="text-[10px] text-zinc-500">Journal</p>
         </div>
-        <div className="rounded-lg border border-white/10 bg-white/5 p-3 text-center">
-          <p className="text-2xl font-bold tabular-nums text-zinc-200">{s.briefingStreak}</p>
+        <div className="flex flex-col justify-center rounded-lg border border-white/10 bg-white/5 p-3 text-center min-h-0">
+          <p className="text-[clamp(22px,2.4vw,34px)] font-bold tabular-nums text-zinc-200">
+            {s.briefingStreak}
+          </p>
           <p className="text-[10px] text-zinc-500">Briefing</p>
         </div>
       </div>
@@ -145,15 +243,17 @@ export function JournalSummaryWidget() {
   });
   const avgReturn = countReturn > 0 ? sumReturn / countReturn : 0;
   return (
-    <div className="flex h-full flex-col justify-between gap-2 p-3">
-      <div className="grid grid-cols-2 gap-2">
-        <div className="rounded border border-white/10 bg-white/5 p-2 text-center">
-          <p className="text-xl font-bold text-zinc-100">{winRate}%</p>
-          <p className="text-[10px] text-zinc-500">Win rate</p>
+    <div className="flex h-full min-h-0 flex-col gap-2 p-3">
+      <div className="min-h-0 flex-1 grid grid-cols-2 gap-2">
+        <div className="flex flex-col justify-center rounded border border-white/10 bg-white/5 p-2 text-center">
+          <p className="text-[clamp(20px,2.6vw,38px)] font-bold text-zinc-100 tabular-nums">{winRate}%</p>
+          <p className="text-[10px] text-zinc-500 shrink-0">Win rate</p>
         </div>
-        <div className="rounded border border-white/10 bg-white/5 p-2 text-center">
-          <p className={"text-xl font-bold " + (totalPnl >= 0 ? "text-emerald-400" : "text-red-400")}>{formatCurrency(totalPnl)}</p>
-          <p className="text-[10px] text-zinc-500">Total P&L</p>
+        <div className="flex flex-col justify-center rounded border border-white/10 bg-white/5 p-2 text-center">
+          <p className={"text-[clamp(18px,2.6vw,36px)] font-bold tabular-nums " + (totalPnl >= 0 ? "text-emerald-400" : "text-red-400")}>
+            {formatCurrency(totalPnl)}
+          </p>
+          <p className="text-[10px] text-zinc-500 shrink-0">Total P&L</p>
         </div>
       </div>
       <div className="text-xs text-zinc-400">
@@ -195,23 +295,42 @@ export function PredictionMarketsWidget() {
   }, [userId]);
   if (bets.length > 0) {
     return (
-      <div className="flex h-full flex-col overflow-y-auto p-2">
-        <p className="mb-2 text-[10px] font-medium text-zinc-500">Your open bets</p>
-        <div className="min-h-0 flex-1 space-y-2">
+      <div className="flex h-full min-h-0 flex-col p-2">
+        <p className="shrink-0 text-[10px] font-medium text-zinc-500">
+          Your open bets
+        </p>
+
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto">
           {bets.map((b, i) => (
-            <Link key={i} href="/predict" className="block rounded border border-white/10 bg-white/5 p-2 text-xs hover:bg-white/10">
-              <p className="line-clamp-2 text-zinc-200">{b.question ?? "Market"}</p>
-              <p className="mt-1 text-[10px] text-zinc-500">{b.side === "yes" ? "YES" : "NO"} · {b.amount} XP</p>
+            <Link
+              key={i}
+              href="/predict"
+              className="block rounded border border-white/10 bg-white/5 p-2 text-xs hover:bg-white/10"
+            >
+              <p className="line-clamp-2 text-zinc-200">
+                {b.question ?? "Market"}
+              </p>
+              <p className="mt-1 text-[10px] text-zinc-500">
+                {b.side === "yes" ? "YES" : "NO"} · {b.amount} XP
+              </p>
             </Link>
           ))}
         </div>
-        <p className="mt-2 text-xs text-amber-400">{points.toLocaleString()} XP balance</p>
-        <Link href="/predict" className="mt-1 text-[11px] text-[var(--accent-color)] hover:underline">View all markets →</Link>
+
+        <p className="mt-2 shrink-0 text-xs text-amber-400">
+          {points.toLocaleString()} XP balance
+        </p>
+        <Link
+          href="/predict"
+          className="mt-1 shrink-0 text-[11px] text-[var(--accent-color)] hover:underline"
+        >
+          View all markets →
+        </Link>
       </div>
     );
   }
   return (
-    <div className="flex h-full flex-col justify-center p-3">
+    <div className="flex h-full min-h-0 flex-col justify-center p-3">
       <p className="text-lg font-bold text-amber-400">{points.toLocaleString()} XP</p>
       <p className="text-[10px] text-zinc-500">Balance</p>
       <Link href="/predict" className="mt-2 block text-[11px] text-[var(--accent-color)] hover:underline">View all markets →</Link>
@@ -259,10 +378,16 @@ export function NewsFeedWidget({ onLoaded }: WidgetContentProps) {
       onLoaded?.();
     }).catch(() => { setLoading(false); onLoaded?.(); });
   }, [onLoaded]);
-  if (loading) return <div className="flex h-24 items-center justify-center"><div className="h-6 w-6 animate-spin rounded-full border-2 border-[var(--accent-color)] border-t-transparent" /></div>;
+  if (loading) {
+    return (
+      <div className="flex min-h-0 h-full items-center justify-center p-2">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-[var(--accent-color)] border-t-transparent" />
+      </div>
+    );
+  }
   return (
-    <div className="flex h-full flex-col overflow-y-auto p-2">
-      <div className="min-h-0 flex-1 space-y-1">
+    <div className="flex h-full min-h-0 flex-col p-2">
+      <div className="min-h-0 flex-1 overflow-y-auto space-y-1">
         {articles.length === 0 ? (
           <p className="text-xs text-zinc-500">No headlines right now.</p>
         ) : (
@@ -292,24 +417,56 @@ export function EconomicCalendarWidget({ onLoaded }: WidgetContentProps) {
       onLoaded?.();
     }).catch(() => { setLoading(false); onLoaded?.(); });
   }, [onLoaded]);
-  if (loading) return <div className="flex h-24 items-center justify-center"><div className="h-6 w-6 animate-spin rounded-full border-2 border-[var(--accent-color)] border-t-transparent" /></div>;
+  if (loading) {
+    return (
+      <div className="flex h-full min-h-0 items-center justify-center p-2">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-[var(--accent-color)] border-t-transparent" />
+      </div>
+    );
+  }
   return (
-    <div className="space-y-1 p-2">
-      {events.length === 0 ? (
-        <p className="text-xs text-zinc-500">No events in this window.</p>
-      ) : (
-        events.map((e, i) => {
-          const impactClass = e.impact === "HIGH" ? "bg-red-500/20 text-red-400" : e.impact === "MEDIUM" ? "bg-amber-500/20 text-amber-400" : "bg-zinc-500/20 text-zinc-400";
-          return (
-          <div key={i} className="flex items-center gap-2 rounded px-2 py-1.5 text-xs">
-            <span className={"shrink-0 rounded px-1.5 py-0.5 text-[10px] " + impactClass}>{e.impact}</span>
-            <span className="min-w-0 truncate text-zinc-200">{e.name}</span>
-            <span className="shrink-0 text-[10px] text-zinc-500">{e.date}</span>
-          </div>
-          );
-        })
-      )}
-      <Link href="/calendar" className="mt-2 block text-center text-[11px] text-[var(--accent-color)] hover:underline">View full calendar</Link>
+    <div className="flex h-full min-h-0 flex-col p-2">
+      <div className="min-h-0 flex-1 overflow-y-auto space-y-1">
+        {events.length === 0 ? (
+          <p className="text-xs text-zinc-500">No events in this window.</p>
+        ) : (
+          events.map((e, i) => {
+            const impactClass =
+              e.impact === "HIGH"
+                ? "bg-red-500/20 text-red-400"
+                : e.impact === "MEDIUM"
+                  ? "bg-amber-500/20 text-amber-400"
+                  : "bg-zinc-500/20 text-zinc-400";
+            return (
+              <div
+                key={i}
+                className="flex items-center gap-2 rounded px-2 py-1.5 text-xs"
+              >
+                <span
+                  className={
+                    "shrink-0 rounded px-1.5 py-0.5 text-[10px] " +
+                    impactClass
+                  }
+                >
+                  {e.impact}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-zinc-200">
+                  {e.name}
+                </span>
+                <span className="shrink-0 text-[10px] text-zinc-500">
+                  {e.date}
+                </span>
+              </div>
+            );
+          })
+        )}
+      </div>
+      <Link
+        href="/calendar"
+        className="mt-2 shrink-0 text-center text-[11px] text-[var(--accent-color)] hover:underline"
+      >
+        View full calendar
+      </Link>
     </div>
   );
 }
@@ -582,21 +739,157 @@ export function LiveChartWidget({ onLoaded }: WidgetContentProps) {
 
 export function AIAssistantWidget() {
   const recent = typeof window !== "undefined" ? getStoredConversations() : [];
+  const initialMessages =
+    recent.length > 0 ? recent[0].messages : ([] as Array<{ role: "user" | "assistant"; content: string }>);
+
+  type ChatMsg = { role: "user" | "assistant"; content: string; id: string };
+  const [messages, setMessages] = useState<ChatMsg[]>(() =>
+    initialMessages.map((m, idx) => ({
+      role: m.role,
+      content: m.content,
+      id: `${m.role}-${idx}`,
+    }))
+  );
+  const [inputValue, setInputValue] = useState("");
+  const [loading, setLoading] = useState(false);
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setMessages(
+      initialMessages.map((m, idx) => ({
+        role: m.role,
+        content: m.content,
+        id: `${m.role}-${idx}`,
+      }))
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const el = messagesScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages, loading]);
+
+  const sendMessage = useCallback(
+    async (content: string) => {
+      const trimmed = content.trim();
+      if (!trimmed || loading) return;
+
+      const userMsg: ChatMsg = {
+        role: "user",
+        content: trimmed,
+        id: `u-${Date.now()}`,
+      };
+      const next = [...messages, userMsg];
+      setMessages(next);
+      setInputValue("");
+      setLoading(true);
+
+      try {
+        const res = await fetch("/api/ai-chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages: next.map((m) => ({ role: m.role, content: m.content })),
+            portfolioContext: getPortfolioContext() || undefined,
+          }),
+        });
+        const data = (await res.json()) as { content?: string; error?: string };
+        if (!res.ok) {
+          const err = data.error || "Something went wrong";
+          const assistantMsg: ChatMsg = {
+            role: "assistant",
+            content: `Sorry, I couldn’t complete that. ${err}`,
+            id: `a-${Date.now()}`,
+          };
+          setMessages((prev) => [...prev, assistantMsg]);
+          saveConversation([...next.map((m) => ({ role: m.role, content: m.content })), { role: "assistant", content: assistantMsg.content }]);
+          return;
+        }
+
+        const assistantContent = data.content ?? "";
+        const assistantMsg: ChatMsg = {
+          role: "assistant",
+          content: assistantContent,
+          id: `a-${Date.now()}`,
+        };
+        const finalMessages = [...next, assistantMsg];
+        setMessages(finalMessages);
+        saveConversation(finalMessages.map((m) => ({ role: m.role, content: m.content })));
+      } catch {
+        const assistantMsg: ChatMsg = {
+          role: "assistant",
+          content: "Sorry, I couldn’t reach the server. Please try again.",
+          id: `a-${Date.now()}`,
+        };
+        setMessages((prev) => [...prev, assistantMsg]);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [messages, loading]
+  );
+
   return (
-    <div className="flex h-full flex-col overflow-hidden p-2">
-      <p className="mb-2 shrink-0 text-[10px] font-medium text-zinc-500">Recent chats</p>
-      <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
-        {recent.length === 0 ? (
-          <p className="text-xs text-zinc-500">No recent chats</p>
-        ) : (
-          recent.slice(0, 8).map((c) => (
-            <Link key={c.id} href="/ai" className="block rounded border border-white/10 bg-white/5 px-2 py-1.5 text-xs text-zinc-200 hover:border-[var(--accent-color)] hover:bg-white/10 line-clamp-2">
-              {c.label || "New chat"}
-            </Link>
-          ))
+    <div className="flex h-full min-h-0 flex-col p-2">
+      <div
+        ref={messagesScrollRef}
+        className="min-h-0 flex-1 overflow-y-auto space-y-2 pr-1"
+      >
+        {messages.length === 0 && !loading ? (
+          <p className="text-xs text-zinc-500">
+            Ask a question about markets or trading…
+          </p>
+        ) : null}
+
+        {messages.map((m) => (
+          <div
+            key={m.id}
+            className={`flex ${m.role === "user" ? "flex-row-reverse" : "flex-row"} gap-2`}
+          >
+            <div
+              className={`rounded-lg px-2 py-1.5 text-[11px] whitespace-pre-wrap ${
+                m.role === "user"
+                  ? "bg-[var(--accent-color)] text-white"
+                  : "bg-[#0F1520] text-zinc-200 border border-white/5"
+              }`}
+            >
+              {m.content}
+            </div>
+          </div>
+        ))}
+
+        {loading && (
+          <div className="text-xs text-zinc-400">Thinking…</div>
         )}
       </div>
-      <Link href="/ai" className="mt-2 shrink-0 text-center text-[11px] text-[var(--accent-color)] hover:underline">Open full assistant</Link>
+
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          sendMessage(inputValue);
+        }}
+        className="mt-2 flex-shrink-0 border-t border-white/10 pt-2"
+      >
+        <div className="flex items-end gap-2">
+          <textarea
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            placeholder="Ask about markets..."
+            rows={2}
+            className="w-full resize-none rounded border border-white/10 bg-transparent px-2 py-1 text-xs text-zinc-100 placeholder:text-zinc-500 outline-none"
+            disabled={loading}
+          />
+          <button
+            type="submit"
+            disabled={loading || !inputValue.trim()}
+            className="flex items-center justify-center rounded bg-[var(--accent-color)] px-3 py-1.5 text-xs font-medium text-[#020308] disabled:opacity-50"
+          >
+            Send
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

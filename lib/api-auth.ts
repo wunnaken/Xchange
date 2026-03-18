@@ -14,10 +14,29 @@ export async function getSessionFromCookies(): Promise<SessionUser | null> {
   const email = cookieStore.get(AUTH_EMAIL_COOKIE)?.value;
   const name = cookieStore.get(AUTH_NAME_COOKIE)?.value;
   if (!email) return null;
-  return {
-    email: decodeURIComponent(email),
-    name: name ? decodeURIComponent(name) : "Trader",
-  };
+
+  const decodedEmail = decodeURIComponent(email);
+  const decodedName = name ? decodeURIComponent(name) : "Trader";
+
+  // Best-effort: prefer the user's profile row (now keyed by `profiles.user_id`).
+  try {
+    const authUserId = await getUserId();
+    if (!authUserId) return { email: decodedEmail, name: decodedName };
+
+    const supabase = createServerClient();
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("id, user_id, email, name, username")
+      .eq("user_id", authUserId)
+      .single();
+
+    return {
+      email: profile?.email ?? decodedEmail,
+      name: profile?.name ?? decodedName,
+    };
+  } catch {
+    return { email: decodedEmail, name: decodedName };
+  }
 }
 
 /**

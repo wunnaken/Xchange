@@ -151,7 +151,8 @@ function defaultWidgets(): WidgetId[] {
 
 export function getDefaultDashboard(name: string): SavedDashboard {
   return {
-    id: `dash-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+    // `dashboards.id` is bigint in Supabase, so keep IDs numeric-only.
+    id: `${Date.now()}${Math.floor(Math.random() * 1000)}`,
     name: name || "My Dashboard",
     layout: defaultLayout(),
     widgets: defaultWidgets(),
@@ -211,7 +212,8 @@ export function deleteDashboard(id: string): void {
 }
 
 export function createNewDashboard(name: string, template: "blank" | "morning" | "crypto" | "longterm" | "daytrader"): SavedDashboard {
-  const id = `dash-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  // `dashboards.id` is bigint in Supabase, so keep IDs numeric-only.
+  const id = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
   let layout: LayoutItem[] = [];
   let widgets: WidgetId[] = [];
 

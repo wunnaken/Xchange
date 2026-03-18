@@ -17,12 +17,10 @@ import {
 import { CountryDetailPanel } from "./CountryDetailPanel";
 
 const GEO_URL = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
-const MAP_MIN_ZOOM = 1;
+const MAP_MIN_ZOOM = 0.25;
 const MAP_MAX_ZOOM = 8;
-const PROJ_HALF_W = 440;
-const PROJ_HALF_H = 220;
-const PAN_MARGIN = 20;
-
+const MAP_INITIAL_CENTER: [number, number] = [0, 20];
+const MAP_INITIAL_ZOOM = 1;
 type CountryInfo = { name: string; id: string };
 
 async function fetchCountryData(country: string, full: boolean): Promise<CountryData | null> {
@@ -69,6 +67,10 @@ export default function MapView() {
   const [hideAiEstimates, setHideAiEstimates] = useState(false);
   const [aiEstimatedCountryNames, setAiEstimatedCountryNames] = useState<Set<string>>(new Set());
   const [isMobile, setIsMobile] = useState(false);
+  const [mapPosition, setMapPosition] = useState<{ coordinates: [number, number]; zoom: number }>({
+    coordinates: MAP_INITIAL_CENTER,
+    zoom: MAP_INITIAL_ZOOM,
+  });
   const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
 
@@ -325,13 +327,6 @@ export default function MapView() {
     [compareMode]
   );
 
-  const cx = mapSize.width / 2;
-  const cy = mapSize.height / 2;
-  const translateExtent: [[number, number], [number, number]] = [
-    [cx - PROJ_HALF_W - PAN_MARGIN, cy - PROJ_HALF_H - PAN_MARGIN],
-    [cx + PROJ_HALF_W + PAN_MARGIN, cy + PROJ_HALF_H + PAN_MARGIN],
-  ];
-
   return (
     <div className="relative flex flex-col gap-4">
       {/* Layer selector + Legend (above map on desktop, legend below on mobile) */}
@@ -399,15 +394,22 @@ export default function MapView() {
               )}
             </div>
             {aiEstimatedCountryNames.size > 0 && (
-              <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-400 transition hover:border-white/20">
-                <input
-                  type="checkbox"
-                  checked={hideAiEstimates}
-                  onChange={(e) => setHideAiEstimates(e.target.checked)}
-                  className="rounded border-white/20 bg-white/5 text-[var(--accent-color)] focus:ring-[var(--accent-color)]"
-                />
-                <span>Hide AI estimates</span>
-              </label>
+              <button
+                type="button"
+                onClick={() => setHideAiEstimates((v) => !v)}
+                className={`rounded-lg border p-2 transition ${
+                  hideAiEstimates
+                    ? "border-[var(--accent-color)] bg-[var(--accent-color)]/20 text-[var(--accent-color)]"
+                    : "border-white/10 bg-white/5 text-zinc-400 hover:border-white/20 hover:bg-white/10 hover:text-zinc-200"
+                }`}
+                aria-label={hideAiEstimates ? "Show AI estimates" : "Hide AI estimates"}
+                title={hideAiEstimates ? "Show AI estimates" : "Hide AI estimates"}
+              >
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                </svg>
+              </button>
             )}
           </div>
         </div>
@@ -430,11 +432,13 @@ export default function MapView() {
               style={{ width: "100%", height: "100%", minHeight: 480 }}
             >
               <ZoomableGroup
-                center={[0, 20]}
-                zoom={1}
+                center={mapPosition.coordinates}
+                zoom={mapPosition.zoom}
+                onMoveEnd={(pos: { coordinates: [number, number]; zoom: number }) =>
+                  setMapPosition({ coordinates: pos.coordinates, zoom: pos.zoom })
+                }
                 minZoom={MAP_MIN_ZOOM}
                 maxZoom={MAP_MAX_ZOOM}
-                translateExtent={translateExtent}
               >
                 <Geographies geography={geography}>
                   {({
@@ -530,8 +534,22 @@ export default function MapView() {
             {activeLayer.wbIndicator ? "Data: World Bank" : "Data: Various (temporary)"}
           </div>
 
-          {/* Compare button + explanation */}
+          {/* Recenter + Compare */}
           <div className="absolute right-2 top-2 flex flex-col items-end gap-1">
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setMapPosition({ coordinates: MAP_INITIAL_CENTER, zoom: MAP_INITIAL_ZOOM })}
+                className="rounded-lg border border-white/10 bg-white/5 p-2 text-zinc-400 transition hover:border-white/20 hover:bg-white/10 hover:text-zinc-200"
+                aria-label="Recenter map"
+                title="Recenter map"
+              >
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                  <circle cx="12" cy="12" r="10" strokeLinecap="round" strokeLinejoin="round" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 2v4M12 18v4M2 12h4M18 12h4" />
+                </svg>
+              </button>
+            </div>
             {!isMobile ? (
               <>
                 <button

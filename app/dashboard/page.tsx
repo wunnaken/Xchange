@@ -48,6 +48,7 @@ export default function DashboardPage() {
   const [newDashTemplate, setNewDashTemplate] = useState<"blank" | "morning" | "crypto" | "longterm" | "daytrader">("blank");
   const [width, setWidth] = useState(1200);
   const [saveFeedback, setSaveFeedback] = useState(false);
+  const [apiSaving, setApiSaving] = useState(false);
   const isDesktop = typeof window !== "undefined" && window.innerWidth >= 1024;
 
   useEffect(() => { setLastWorkspaceTab("dashboard"); }, []);
@@ -59,25 +60,109 @@ export default function DashboardPage() {
   }, [current]);
 
   useEffect(() => {
-    const l = getDashboardList();
-    setList(l);
-    if (l.length > 0 && !current) {
+    const init = async () => {
       const lastId = getLastDashboardId();
-      const toLoad = lastId && l.some((d) => d.id === lastId) ? getDashboard(lastId) ?? l[0] : (getDashboard(l[0].id) ?? l[0]);
-      setCurrent(toLoad);
-      setLastDashboardId(toLoad.id);
-    }
-  }, []);
 
-  useEffect(() => {
-    if (list.length === 0 && !current && typeof window !== "undefined") {
+      // 1) Supabase first
+      try {
+        const res = await fetch("/api/dashboard", { cache: "no-store" });
+        if (!res.ok) throw new Error(`api ${res.status}`);
+        const data = (await res.json()) as { dashboards?: SavedDashboard[] };
+        const dashboards = Array.isArray(data.dashboards) ? data.dashboards : [];
+
+        if (dashboards.length > 0) {
+          setList(dashboards);
+          const toLoad =
+            lastId && dashboards.some((d) => d.id === lastId)
+              ? dashboards.find((d) => d.id === lastId) ?? dashboards[0]
+              : dashboards[0];
+          setCurrent(toLoad);
+          setLastDashboardId(toLoad.id);
+          return;
+        }
+
+        // Supabase returned zero dashboards: create a default one in Supabase.
+        const def = getDefaultDashboard("My Dashboard");
+        try {
+          const res = await fetch("/api/dashboard", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              dashboardId: def.id,
+              name: def.name,
+              layout: def.layout,
+              widgets: def.widgets,
+              theme: def.theme,
+            }),
+          });
+          if (res.ok) {
+            const saved = (await res.json()) as { dashboard?: SavedDashboard };
+            const dash = saved.dashboard ?? def;
+            setCurrent(dash);
+            setList([dash]);
+            setLastDashboardId(dash.id);
+            return;
+          }
+        } catch {
+          // ignore and fallback to localStorage below
+        }
+      } catch {
+        // fall through to localStorage
+      }
+
+      // 2) LocalStorage fallback
+      const l = getDashboardList();
+      setList(l);
+      if (l.length > 0) {
+        if (!current) {
+          const toLoad =
+            lastId && l.some((d) => d.id === lastId)
+              ? getDashboard(lastId) ?? l[0]
+              : getDashboard(l[0].id) ?? l[0];
+          setCurrent(toLoad);
+          setLastDashboardId(toLoad.id);
+        }
+        return;
+      }
+
+      // 3) If nothing exists, create a default dashboard
       const def = getDefaultDashboard("My Dashboard");
       saveDashboard(def);
+
+      // Best-effort: try to persist the default to Supabase.
+      // If it fails, the user can still work with the local dashboard.
+      try {
+        const res = await fetch("/api/dashboard", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            dashboardId: def.id,
+            name: def.name,
+            layout: def.layout,
+            widgets: def.widgets,
+            theme: def.theme,
+          }),
+        });
+        if (res.ok) {
+          const saved = (await res.json()) as { dashboard?: SavedDashboard };
+          const dash = saved.dashboard ?? def;
+          setCurrent(dash);
+          setList([dash]);
+          setLastDashboardId(dash.id);
+          return;
+        }
+      } catch {
+        // ignore
+      }
+
       setCurrent(def);
       setList(getDashboardList());
       setLastDashboardId(def.id);
-    }
-  }, [list.length, current]);
+    };
+
+    init();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (current) setNameValue(current.name);
@@ -95,14 +180,27 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    const onVisibility = () => {
+    const onVisibility = async () => {
       if (document.visibilityState !== "visible") return;
-      const l = getDashboardList();
-      setList(l);
-      if (current && l.length > 0) {
-        const fresh = getDashboard(current.id);
-        if (fresh) setCurrent(fresh);
-        else if (l.some((d) => d.id === current.id)) setCurrent(getDashboard(current.id) ?? current);
+      // Prefer Supabase refresh; fall back to localStorage.
+      try {
+        const res = await fetch("/api/dashboard", { cache: "no-store" });
+        if (!res.ok) throw new Error(`api ${res.status}`);
+        const data = (await res.json()) as { dashboards?: SavedDashboard[] };
+        const dashboards = Array.isArray(data.dashboards) ? data.dashboards : [];
+        setList(dashboards);
+        if (current && dashboards.length > 0) {
+          const match = dashboards.find((d) => d.id === current.id);
+          if (match) setCurrent(match);
+        }
+      } catch {
+        const l = getDashboardList();
+        setList(l);
+        if (current && l.length > 0) {
+          const fresh = getDashboard(current.id);
+          if (fresh) setCurrent(fresh);
+          else if (l.some((d) => d.id === current.id)) setCurrent(getDashboard(current.id) ?? current);
+        }
       }
     };
     document.addEventListener("visibilitychange", onVisibility);
@@ -112,6 +210,10 @@ export default function DashboardPage() {
   const layoutChangeInProgress = useRef(false);
   const currentLayoutRef = useRef<LayoutItem[]>([]);
   currentLayoutRef.current = current?.layout ?? [];
+  const currentRef = useRef<SavedDashboard | null>(null);
+  currentRef.current = current;
+  const autoSaveTimerRef = useRef<number | null>(null);
+  const saveInFlightRef = useRef(false);
   useEffect(() => {
     layoutChangeInProgress.current = false;
   }, [current?.id]);
@@ -129,6 +231,75 @@ export default function DashboardPage() {
     },
     [current?.id]
   );
+
+  // Auto-save layout after 2s of inactivity (debounced) while in Edit Mode.
+  useEffect(() => {
+    if (!isDesktop || !editMode) return;
+    if (!current) return;
+
+    if (autoSaveTimerRef.current) {
+      window.clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+
+    autoSaveTimerRef.current = window.setTimeout(async () => {
+      const dash = currentRef.current;
+      if (!dash) return;
+      if (saveInFlightRef.current) return;
+
+      const layoutToSave = (currentLayoutRef.current ?? [])
+        .filter((i) => i.i !== "macro-map-mini")
+        .filter((item, idx, arr) => arr.findIndex((x) => x.i === item.i) === idx);
+
+      const payload = {
+        dashboardId: dash.id,
+        name: dash.name,
+        layout: layoutToSave,
+        widgets: dash.widgets,
+        theme: dash.theme,
+      };
+
+      try {
+        saveInFlightRef.current = true;
+        setApiSaving(true);
+        const res = await fetch("/api/dashboard", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error(`api ${res.status}`);
+        const json = (await res.json()) as { dashboard?: SavedDashboard };
+        if (json.dashboard) {
+          setCurrent(json.dashboard);
+          setList((prev) => {
+            const idx = prev.findIndex((d) => d.id === json.dashboard!.id);
+            if (idx >= 0) return prev.map((d, i) => (i === idx ? json.dashboard! : d)).slice(0, MAX_DASHBOARDS_COUNT);
+            return [json.dashboard!, ...prev].slice(0, MAX_DASHBOARDS_COUNT);
+          });
+          setLastDashboardId(json.dashboard.id);
+        } else {
+          // Keep local state updated with layout even if server returned no row.
+          setCurrent((prev) => (prev ? { ...prev, layout: layoutToSave, updatedAt: new Date().toISOString() } : prev));
+        }
+      } catch {
+        // Local fallback (no explicit "saved locally" UI).
+        const fallback = { ...dash, layout: layoutToSave, updatedAt: new Date().toISOString() };
+        saveDashboard(fallback);
+        setCurrent(fallback);
+        setList(getDashboardList());
+      } finally {
+        saveInFlightRef.current = false;
+        setApiSaving(false);
+      }
+    }, 2000);
+
+    return () => {
+      if (autoSaveTimerRef.current) {
+        window.clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+    };
+  }, [current?.layout, current?.id, current?.widgets, current?.theme, isDesktop, editMode]);
 
   const handleAddWidget = useCallback(
     (widgetId: WidgetId) => {
@@ -180,24 +351,90 @@ export default function DashboardPage() {
       setCurrent(updated);
       setNameValue(updated.name);
       setEditingName(false);
-      loadList();
+      // Persist name change immediately so it doesn't rely on layout edits.
+      (async () => {
+        const layoutToSave = (updated.layout ?? [])
+          .filter((i) => i.i !== "macro-map-mini")
+          .filter((item, idx, arr) => arr.findIndex((x) => x.i === item.i) === idx);
+
+        const payload = {
+          dashboardId: updated.id,
+          name: updated.name,
+          layout: layoutToSave,
+          widgets: updated.widgets,
+          theme: updated.theme,
+        };
+        try {
+          setApiSaving(true);
+          const res = await fetch("/api/dashboard", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (!res.ok) throw new Error(`api ${res.status}`);
+          const json = (await res.json()) as { dashboard?: SavedDashboard };
+          if (json.dashboard) {
+            setCurrent(json.dashboard);
+            setList((prev) => {
+              const idx = prev.findIndex((d) => d.id === json.dashboard?.id);
+              if (idx >= 0) return prev.map((d, i) => (i === idx ? json.dashboard! : d));
+              return [json.dashboard!, ...prev];
+            });
+            setLastDashboardId(json.dashboard.id);
+          }
+        } catch {
+          // Fallback to localStorage if the API is unavailable.
+          saveDashboard({ ...updated, layout: layoutToSave, updatedAt: new Date().toISOString() });
+          setList(getDashboardList());
+        } finally {
+          setApiSaving(false);
+        }
+      })();
     },
-    [current, loadList]
+    [current]
   );
 
-  const handleSaveDashboard = useCallback(() => {
+  const handleSaveDashboard = useCallback(async () => {
     if (!current) return;
     const layoutToSave = (current.layout ?? [])
       .filter((i) => i.i !== "macro-map-mini")
       .filter((item, idx, arr) => arr.findIndex((x) => x.i === item.i) === idx);
     const toSave = { ...current, layout: layoutToSave, updatedAt: new Date().toISOString() };
-    saveDashboard(toSave);
-    setCurrent(toSave);
-    setLastDashboardId(current.id);
-    loadList();
-    setSaveFeedback(true);
-    setTimeout(() => setSaveFeedback(false), 2000);
-  }, [current, loadList]);
+    setApiSaving(true);
+    try {
+      const res = await fetch("/api/dashboard", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dashboardId: toSave.id,
+          name: toSave.name,
+          layout: toSave.layout,
+          widgets: toSave.widgets,
+          theme: toSave.theme,
+        }),
+      });
+      if (!res.ok) throw new Error(`api ${res.status}`);
+      const json = (await res.json()) as { dashboard?: SavedDashboard };
+      const saved = json.dashboard ?? toSave;
+      setCurrent(saved);
+      setList((prev) => {
+        const idx = prev.findIndex((d) => d.id === saved.id);
+        const next = idx >= 0 ? prev.map((d) => (d.id === saved.id ? saved : d)) : [saved, ...prev];
+        return next.slice(0, MAX_DASHBOARDS_COUNT);
+      });
+      setLastDashboardId(saved.id);
+    } catch {
+      // Fallback to localStorage if the API is unavailable.
+      saveDashboard(toSave);
+      setCurrent(toSave);
+      setLastDashboardId(toSave.id);
+      setList(getDashboardList());
+    } finally {
+      setApiSaving(false);
+      setSaveFeedback(true);
+      setTimeout(() => setSaveFeedback(false), 2000);
+    }
+  }, [current]);
 
   const handleCreateNew = useCallback(() => {
     const name = newDashName.trim() || "New Dashboard";
@@ -209,6 +446,37 @@ export default function DashboardPage() {
     setNewDashModal(false);
     setNewDashName("");
     setNewDashTemplate("blank");
+
+    // Best-effort: persist the new dashboard to Supabase.
+    (async () => {
+      try {
+        setApiSaving(true);
+        const payload = {
+          dashboardId: dash.id,
+          name: dash.name,
+          layout: dash.layout,
+          widgets: dash.widgets,
+          theme: dash.theme,
+        };
+        const res = await fetch("/api/dashboard", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (res.ok) {
+          const json = (await res.json()) as { dashboard?: SavedDashboard };
+          if (json.dashboard) {
+            setCurrent(json.dashboard);
+            setList([json.dashboard]);
+            setLastDashboardId(json.dashboard.id);
+          }
+        }
+      } catch {
+        // ignore; user can still use local dashboard
+      } finally {
+        setApiSaving(false);
+      }
+    })();
   }, [newDashName, newDashTemplate]);
 
   const theme = current?.theme ?? {};
@@ -220,7 +488,9 @@ export default function DashboardPage() {
   const layout = (current?.layout ?? [])
     .filter((i) => i.i !== "macro-map-mini")
     .filter((item, idx, arr) => arr.findIndex((x) => x.i === item.i) === idx);
-  const canEdit = isDesktop && editMode;
+  // In edit mode we want widgets to always capture mouse events for dragging/resizing.
+  // (Scroll/zoom passthrough is handled separately via view-mode pointer-events CSS.)
+  const canEdit = editMode;
 
   const ROW_H = 60;
   const layoutBottom = layout.length ? Math.max(...layout.map((i) => i.y + i.h)) * ROW_H + 80 : 400;
@@ -269,11 +539,33 @@ export default function DashboardPage() {
     return () => cancelAnimationFrame(id);
   }, [current?.id, layout.length, layoutWidth, layoutBottom]);
 
-  const handlePanStart = useCallback((e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest(".react-grid-item")) return;
-    panStart.current = { x: panRef.current.x, y: panRef.current.y, cursorX: e.clientX, cursorY: e.clientY };
-    setIsPanning(true);
-  }, []);
+  const handlePanStart = useCallback(
+    (e: React.MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+
+      // View mode: allow panning even when cursor is over widgets,
+      // but don't steal clicks from interactive elements.
+      if (!editMode) {
+        const interactive = target.closest(
+          "button,a,input,textarea,select,label,[role='button'],[contenteditable='true']"
+        );
+        if (interactive) return;
+      } else {
+        // Edit mode: keep panning off widgets (widgets handle drag/resize).
+        if (target.closest(".react-grid-item")) return;
+      }
+
+      panStart.current = {
+        x: panRef.current.x,
+        y: panRef.current.y,
+        cursorX: e.clientX,
+        cursorY: e.clientY,
+      };
+      setIsPanning(true);
+    },
+    [editMode]
+  );
 
   const handlePanMove = useCallback((e: MouseEvent) => {
     if (!isPanningRef.current) return;
@@ -299,8 +591,11 @@ export default function DashboardPage() {
   const MAX_SCALE = 1.8;
   const scaleRef = useRef(scale);
   scaleRef.current = scale;
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    if ((e.target as HTMLElement).closest(".react-grid-item")) return;
+  const handleWheel = useCallback(
+    (e: React.WheelEvent) => {
+      // In view mode, allow zooming over widgets too.
+      // In edit mode, keep wheel from interfering with dragging/resizing.
+      if (canEdit && (e.target as HTMLElement).closest(".react-grid-item")) return;
     const s = scaleRef.current;
     const zoomOut = e.deltaY > 0;
     const wouldChange = (zoomOut && s > MIN_SCALE) || (!zoomOut && s < MAX_SCALE);
@@ -308,7 +603,9 @@ export default function DashboardPage() {
     if (!wouldChange) return;
     const delta = zoomOut ? -0.05 : 0.05;
     setScale((prev) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, prev + delta)));
-  }, []);
+    },
+    [canEdit]
+  );
 
   return (
     <div className={"flex h-full flex-col bg-[#0A0E1A] text-zinc-200 " + (canEdit ? "dashboard-page-in-edit" : "")} style={{ minHeight: "calc(100vh - 3.5rem)" }}>
@@ -351,6 +648,7 @@ export default function DashboardPage() {
             <span className={`absolute top-1 h-4 w-4 rounded-full bg-white transition left-1 ${editMode ? "translate-x-5" : ""}`} />
           </button>
           {editMode && <span className="rounded bg-amber-500/20 px-2 py-0.5 text-[10px] text-amber-400">Editing</span>}
+          {apiSaving && <span className="text-[10px] text-zinc-500">saving...</span>}
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
@@ -368,7 +666,58 @@ export default function DashboardPage() {
                     <button type="button" onClick={() => handleSwitchDashboard(d)} className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm">
                       <span className={"truncate " + (d.id === current?.id ? "font-medium text-[var(--accent-color)]" : "text-zinc-200")}>{d.name}</span>
                     </button>
-                    <button type="button" onClick={(e) => { e.stopPropagation(); deleteDashboard(d.id); setList(getDashboardList()); if (current?.id === d.id) { const next = getDashboardList(); setCurrent(next[0] ?? null); setNameValue(next[0]?.name ?? "My Dashboard"); } setDashDropdownOpen(false); }} className="shrink-0 rounded p-1 text-zinc-500 hover:bg-white/10 hover:text-red-400" title="Delete dashboard" aria-label="Delete">×</button>
+                    <button
+                      type="button"
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        try {
+                          const res = await fetch(
+                            `/api/dashboard?dashboardId=${encodeURIComponent(d.id)}`,
+                            { method: "DELETE" }
+                          );
+                          if (!res.ok) throw new Error(`api ${res.status}`);
+
+                          const res2 = await fetch("/api/dashboard", { cache: "no-store" });
+                          const json = (await res2.json()) as { dashboards?: SavedDashboard[] };
+                          const dashboards = Array.isArray(json.dashboards) ? json.dashboards : [];
+
+                          if (dashboards.length > 0) {
+                            setList(dashboards);
+                            if (current?.id === d.id) {
+                              setCurrent(dashboards[0]);
+                              setNameValue(dashboards[0].name);
+                              setLastDashboardId(dashboards[0].id);
+                            }
+                          } else {
+                            // Re-create default locally if Supabase returns empty after delete.
+                            const def = getDefaultDashboard("My Dashboard");
+                            saveDashboard(def);
+                            setList(getDashboardList());
+                            if (current?.id === d.id) {
+                              setCurrent(def);
+                              setNameValue(def.name);
+                              setLastDashboardId(def.id);
+                            }
+                          }
+                        } catch {
+                          // Fallback to localStorage.
+                          deleteDashboard(d.id);
+                          const next = getDashboardList();
+                          setList(next);
+                          if (current?.id === d.id) {
+                            setCurrent(next[0] ?? null);
+                            setNameValue(next[0]?.name ?? "My Dashboard");
+                          }
+                        } finally {
+                          setDashDropdownOpen(false);
+                        }
+                      }}
+                      className="shrink-0 rounded p-1 text-zinc-500 hover:bg-white/10 hover:text-red-400"
+                      title="Delete dashboard"
+                      aria-label="Delete"
+                    >
+                      ×
+                    </button>
                   </div>
                 ))}
                 {list.length < MAX_DASHBOARDS_COUNT && (
@@ -421,6 +770,8 @@ export default function DashboardPage() {
               width={width}
               layout={layout}
               onLayoutChange={handleLayoutChange}
+              isDraggable={canEdit}
+              isResizable={canEdit}
               gridConfig={{
                 cols: 12,
                 rowHeight: ROW_H,
@@ -469,7 +820,7 @@ export default function DashboardPage() {
             </svg>
             Save dashboard
           </button>
-          {saveFeedback && <span className="text-sm text-emerald-400">Saved!</span>}
+          {saveFeedback && <span className="text-sm text-emerald-400">Saved</span>}
         </div>
       )}
 

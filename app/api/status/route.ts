@@ -8,7 +8,7 @@ export async function GET() {
   let finnhubOk = false;
   let newsOk = false;
   const finnhubKey = process.env.FINNHUB_API_KEY;
-  const newsKey = process.env.NEWS_API_KEY;
+  const newsKey = process.env.NEWSDATA_API_KEY;
 
   if (finnhubKey) {
     try {
@@ -25,8 +25,9 @@ export async function GET() {
 
   if (newsKey) {
     try {
+      const params = new URLSearchParams({ apikey: newsKey, q: "business", language: "en", size: "1" });
       const res = await fetch(
-        `https://newsapi.org/v2/top-headlines?country=us&pageSize=1&apiKey=${newsKey}`,
+        `https://newsdata.io/api/1/news?${params.toString()}`,
         { next: { revalidate: 0 }, signal: AbortSignal.timeout(5000) }
       );
       newsOk = res.ok;

@@ -239,7 +239,7 @@ export default function NewsPage() {
           <p className="mt-2 max-w-2xl text-sm text-zinc-400">
             {usingLiveFeed
               ? "Key headlines on equities, macro, rates, and commodities."
-              : "Key headlines on equities, macro, rates, and commodities. Add NEWS_API_KEY in .env.local for live stories and images."}
+              : "Key headlines on equities, macro, rates, and commodities. Add NEWSDATA_API_KEY in .env.local for live stories and images."}
           </p>
         </div>
         {lastUpdatedAt && (

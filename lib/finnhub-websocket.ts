@@ -110,6 +110,18 @@ export class FinnhubWebSocket {
               if (subs) {
                 subs.forEach((cb) => cb(price, change, changePercent));
               }
+            } else {
+              // REST snapshot failed (e.g. CoinGecko 429) but WS trades still arrive — seed so live updates work
+              const subs = this.subscribers.get(appSymbol);
+              if (subs && subs.size > 0) {
+                this.prices.set(appSymbol, {
+                  price,
+                  change: 0,
+                  changePercent: 0,
+                  prevClose: price,
+                });
+                subs.forEach((cb) => cb(price, 0, 0));
+              }
             }
           });
         }

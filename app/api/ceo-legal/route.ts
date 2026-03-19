@@ -10,42 +10,61 @@ export type CEOLegalItem = {
   active: boolean;
 };
 
+const CACHE_MS = 6 * 60 * 60 * 1000;
+const cache = new Map<string, { data: CEOLegalItem[]; fetchedAt: number }>();
+
+const NEWSDATA_BASE = "https://newsdata.io/api/1/news";
+
 export async function GET(request: NextRequest) {
   const name = request.nextUrl.searchParams.get("name")?.trim();
   if (!name) return NextResponse.json({ items: [] }, { status: 400 });
 
-  const apiKey = process.env.NEWS_API_KEY?.trim();
+  const apiKey = process.env.NEWSDATA_API_KEY?.trim();
+  if (!apiKey) return NextResponse.json({ items: [] });
+
+  const cacheKey = `ceo-legal:${name}`.toLowerCase();
+  const cached = cache.get(cacheKey);
+  if (cached && Date.now() - cached.fetchedAt < CACHE_MS) {
+    return NextResponse.json({ items: cached.data });
+  }
+
   const q = `"${name}" (lawsuit OR investigation OR fraud OR SEC OR DOJ)`;
   const params = new URLSearchParams({
+    apikey: apiKey,
     q: q.slice(0, 200),
-    sortBy: "publishedAt",
-    pageSize: "10",
     language: "en",
-    apiKey: apiKey || "",
+    size: "10",
   });
 
   try {
-    if (!apiKey) return NextResponse.json({ items: [] });
-    const res = await fetch(
-      `https://newsapi.org/v2/everything?${params.toString()}`,
-      { next: { revalidate: 0 } }
-    );
-    if (!res.ok) return NextResponse.json({ items: [] });
-    const data = (await res.json()) as { status?: string; articles?: { title?: string; url?: string; source?: { name?: string }; publishedAt?: string }[] };
-    const raw = data?.status !== "error" ? data?.articles ?? [] : [];
+    const res = await fetch(`${NEWSDATA_BASE}?${params.toString()}`, {
+      next: { revalidate: 0 },
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!res.ok) {
+      if (cached?.data) return NextResponse.json({ items: cached.data });
+      return NextResponse.json({ items: [] });
+    }
+    const data = (await res.json()) as {
+      status?: string;
+      results?: { title?: string; link?: string; source_name?: string; pubDate?: string }[];
+    };
+    const raw = data?.status === "success" ? (data?.results ?? []) : [];
     const activeWords = /investigation|probe|charged|subpoena|lawsuit filed/i;
     const items: CEOLegalItem[] = raw
-      .filter((a) => a?.title && a?.url)
+      .filter((r) => r?.title && r?.link)
       .slice(0, 10)
-      .map((a) => ({
-        date: (a.publishedAt ?? "").slice(0, 10),
-        headline: String(a.title).slice(0, 150),
-        url: String(a.url),
-        source: (a.source as { name?: string })?.name ?? "News",
-        active: activeWords.test(String(a.title)),
+      .map((r) => ({
+        date: (r.pubDate ?? "").slice(0, 10),
+        headline: String(r.title).slice(0, 150),
+        url: String(r.link),
+        source: (r as { source_name?: string }).source_name ?? "News",
+        active: activeWords.test(String(r.title)),
       }));
+    cache.set(cacheKey, { data: items, fetchedAt: Date.now() });
     return NextResponse.json({ items });
   } catch {
+    if (cached?.data) return NextResponse.json({ items: cached.data });
     return NextResponse.json({ items: [] });
   }
 }

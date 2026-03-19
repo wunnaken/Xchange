@@ -9,13 +9,16 @@ export type MapNewsArticle = {
   source: string;
   url: string;
   publishedAt: string;
+  image_url?: string | null;
 };
 
-const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const CACHE_MS = 6 * 60 * 60 * 1000;
 const cache = new Map<
   string,
-  { articles: MapNewsArticle[]; fetchedAt: number; rateLimited?: boolean }
+  { data: MapNewsArticle[]; fetchedAt: number }
 >();
+
+const NEWSDATA_BASE = "https://newsdata.io/api/1/news";
 
 /** Strategy 3: country → search query for main index/topics */
 const COUNTRY_TOPICS: Record<string, string> = {
@@ -38,80 +41,67 @@ function getTopicQuery(country: string): string {
   return COUNTRY_TOPICS[normalized] ?? `${normalized} economy`;
 }
 
-type RawArticle = {
+type NewsDataResult = {
   title?: string;
   description?: string;
-  url?: string;
-  source?: { name?: string };
-  publishedAt?: string;
+  link?: string;
+  source_name?: string;
+  pubDate?: string;
+  image_url?: string;
 };
 
-type FetchStrategyResult = {
-  articles: MapNewsArticle[];
-  status: number;
-  apiMessage?: string;
-};
-
-async function fetchStrategy(
+async function fetchFromNewsData(
   apiKey: string,
   q: string,
-  pageSize: number
-): Promise<FetchStrategyResult> {
-  const params = new URLSearchParams({
-    q,
-    language: "en",
-    sortBy: "publishedAt",
-    pageSize: String(pageSize),
-    apiKey,
-  });
-  const res = await fetch(`https://newsapi.org/v2/everything?${params.toString()}`, {
-    next: { revalidate: 0 },
-  });
-  const data = (await res.json()) as {
-    status?: string;
-    message?: string;
-    articles?: RawArticle[];
-  };
-  if (res.status === 429) {
-    return { articles: [], status: 429, apiMessage: data?.message };
+  size: number
+): Promise<{ articles: MapNewsArticle[]; status: number }> {
+  try {
+    const params = new URLSearchParams({
+      apikey: apiKey,
+      q: q.slice(0, 200),
+      language: "en",
+      size: String(size),
+    });
+    const res = await fetch(`${NEWSDATA_BASE}?${params.toString()}`, {
+      next: { revalidate: 0 },
+      signal: AbortSignal.timeout(12000),
+    });
+    const data = (await res.json()) as {
+      status?: string;
+      results?: NewsDataResult[];
+    };
+    if (res.status === 429 || !res.ok) {
+      return { articles: [], status: res.status };
+    }
+    if (data?.status !== "success") {
+      return { articles: [], status: 500 };
+    }
+    const raw = Array.isArray(data?.results) ? data.results : [];
+    const articles: MapNewsArticle[] = raw
+      .filter((r) => r?.title && (r.link?.startsWith("http://") || r.link?.startsWith("https://")))
+      .map((r) => ({
+        title: String(r.title ?? ""),
+        description: (r.description ?? "").trim() || null,
+        source: (r.source_name ?? "—").trim(),
+        url: (r.link ?? "").trim(),
+        publishedAt: r.pubDate ?? new Date().toISOString(),
+        image_url: (r.image_url ?? "").trim() || null,
+      }))
+      .slice(0, size);
+    return { articles, status: res.status };
+  } catch {
+    return { articles: [], status: 500 };
   }
-  if (!res.ok) {
-    return { articles: [], status: res.status, apiMessage: data?.message };
-  }
-  if (data?.status === "error") {
-    return { articles: [], status: 500, apiMessage: data?.message };
-  }
-  const raw = data?.articles ?? [];
-  const articles: MapNewsArticle[] = raw
-    .filter((a) => a?.title && (a.url?.startsWith("http://") || a.url?.startsWith("https://")))
-    .map((a) => ({
-      title: a.title ?? "",
-      description: a.description?.trim() || null,
-      source: a.source?.name ?? "—",
-      url: (a.url ?? "").trim(),
-      publishedAt: a.publishedAt ?? "",
-    }))
-    .slice(0, pageSize);
-  return { articles, status: res.status, apiMessage: data?.message };
 }
-
-// Use same env var as app/api/news/route.ts (NewsAPI key)
-const getNewsApiKey = (): string | undefined =>
-  process.env.NEWS_API_KEY?.trim() ??
-  process.env.NEWSAPI_KEY?.trim() ??
-  process.env.NEXT_PUBLIC_NEWS_API_KEY?.trim();
 
 export async function GET(request: NextRequest) {
   const country = request.nextUrl.searchParams.get("country")?.trim();
-  console.log("[map-news] API key present:", !!process.env.NEWS_API_KEY);
-  console.log("[map-news] Country requested:", country);
   if (!country) {
     return NextResponse.json({ error: "Missing country" }, { status: 400 });
   }
 
-  const apiKey = getNewsApiKey();
+  const apiKey = process.env.NEWSDATA_API_KEY?.trim();
   if (!apiKey) {
-    console.log("[map-news] No API key found (tried NEWS_API_KEY, NEWSAPI_KEY, NEXT_PUBLIC_NEWS_API_KEY)");
     return NextResponse.json({
       articles: [],
       message: "No recent market news found for " + country,
@@ -120,88 +110,45 @@ export async function GET(request: NextRequest) {
 
   const cacheKey = country.toLowerCase();
   const cached = cache.get(cacheKey);
-  if (cached) {
-    if (cached.rateLimited) {
-      return NextResponse.json({
-        articles: [],
-        message: "News temporarily unavailable — please try again in a moment",
-        rateLimited: true,
-      });
-    }
-    if (Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
-      return NextResponse.json({
-        articles: cached.articles,
-        ...(cached.articles.length === 0 ? { message: "No recent market news found for " + country } : {}),
-      });
-    }
+  if (cached && Date.now() - cached.fetchedAt < CACHE_MS) {
+    return NextResponse.json({
+      articles: cached.data,
+      ...(cached.data.length === 0 ? { message: "No recent market news found for " + country } : {}),
+    });
   }
 
-  const pageSize = 4;
+  const size = 4;
 
-  // Strategy 1: [country] economy OR market OR finance
-  let result = await fetchStrategy(
+  let result = await fetchFromNewsData(
     apiKey,
     `${country} economy OR market OR finance`,
-    pageSize
+    size
   );
-  console.log("[map-news] Strategy 1 result:", {
-    status: result.status,
-    articleCount: result.articles?.length ?? 0,
-    error: result.apiMessage,
-  });
-  if (result.status === 429) {
-    cache.set(cacheKey, { articles: [], fetchedAt: Date.now(), rateLimited: true });
-    return NextResponse.json({
-      articles: [],
-      message: "News temporarily unavailable — please try again in a moment",
-      rateLimited: true,
-    });
+  if (result.status === 429 && cached?.data?.length) {
+    return NextResponse.json({ articles: cached.data });
   }
   if (result.articles.length >= 2) {
-    cache.set(cacheKey, { articles: result.articles, fetchedAt: Date.now() });
+    cache.set(cacheKey, { data: result.articles, fetchedAt: Date.now() });
     return NextResponse.json({ articles: result.articles });
   }
 
-  // Strategy 2: broader — just [country]
-  result = await fetchStrategy(apiKey, country, pageSize);
-  console.log("[map-news] Strategy 2 result:", {
-    status: result.status,
-    articleCount: result.articles?.length ?? 0,
-    error: result.apiMessage,
-  });
-  if (result.status === 429) {
-    cache.set(cacheKey, { articles: [], fetchedAt: Date.now(), rateLimited: true });
-    return NextResponse.json({
-      articles: [],
-      message: "News temporarily unavailable — please try again in a moment",
-      rateLimited: true,
-    });
+  result = await fetchFromNewsData(apiKey, country, size);
+  if (result.status === 429 && cached?.data?.length) {
+    return NextResponse.json({ articles: cached.data });
   }
   if (result.articles.length >= 2) {
-    cache.set(cacheKey, { articles: result.articles, fetchedAt: Date.now() });
+    cache.set(cacheKey, { data: result.articles, fetchedAt: Date.now() });
     return NextResponse.json({ articles: result.articles });
   }
 
-  // Strategy 3: country-specific topic query
   const topicQuery = getTopicQuery(country);
-  result = await fetchStrategy(apiKey, topicQuery, pageSize);
-  console.log("[map-news] Strategy 3 result:", {
-    status: result.status,
-    articleCount: result.articles?.length ?? 0,
-    error: result.apiMessage,
-    topicQuery,
-  });
-  if (result.status === 429) {
-    cache.set(cacheKey, { articles: [], fetchedAt: Date.now(), rateLimited: true });
-    return NextResponse.json({
-      articles: [],
-      message: "News temporarily unavailable — please try again in a moment",
-      rateLimited: true,
-    });
+  result = await fetchFromNewsData(apiKey, topicQuery, size);
+  if (result.status === 429 && cached?.data?.length) {
+    return NextResponse.json({ articles: cached.data });
   }
 
   const articles = result.articles.length > 0 ? result.articles : [];
-  cache.set(cacheKey, { articles, fetchedAt: Date.now() });
+  cache.set(cacheKey, { data: articles, fetchedAt: Date.now() });
 
   return NextResponse.json({
     articles,

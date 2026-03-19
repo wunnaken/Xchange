@@ -368,12 +368,12 @@ function formatTimeAgo(dateStr: string): string {
 }
 
 export function NewsFeedWidget({ onLoaded }: WidgetContentProps) {
-  const [articles, setArticles] = useState<{ title: string; url: string; source: string; publishedAt: string }[]>([]);
+  const [articles, setArticles] = useState<{ title: string; url: string; source: string; publishedAt: string; urlToImage?: string | null }[]>([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     fetch("/api/news").then((r) => r.json()).then((d) => {
       const list = Array.isArray(d?.articles) ? d.articles : [];
-      setArticles(list.slice(0, 10).map((a: { title?: string; url?: string; source?: string; publishedAt?: string }) => ({ title: a.title ?? "", url: a.url ?? "#", source: a.source ?? "", publishedAt: a.publishedAt ?? "" })));
+      setArticles(list.slice(0, 10).map((a: { title?: string; url?: string; source?: string; publishedAt?: string; urlToImage?: string | null }) => ({ title: a.title ?? "", url: a.url ?? "#", source: a.source ?? "", publishedAt: a.publishedAt ?? "", urlToImage: a.urlToImage ?? null })));
       setLoading(false);
       onLoaded?.();
     }).catch(() => { setLoading(false); onLoaded?.(); });
@@ -392,9 +392,17 @@ export function NewsFeedWidget({ onLoaded }: WidgetContentProps) {
           <p className="text-xs text-zinc-500">No headlines right now.</p>
         ) : (
           articles.map((a, i) => (
-            <a key={i} href={a.url} target="_blank" rel="noopener noreferrer" className="block rounded px-2 py-1.5 text-xs hover:bg-white/5">
-              <span className="line-clamp-2 text-zinc-200">{a.title}</span>
-              <span className="text-[10px] text-zinc-500">{a.source} · {formatTimeAgo(a.publishedAt)}</span>
+            <a key={i} href={a.url} target="_blank" rel="noopener noreferrer" className="flex gap-2 rounded px-2 py-1.5 text-xs hover:bg-white/5">
+              {a.urlToImage ? (
+                <div className="h-10 w-12 flex-shrink-0 overflow-hidden rounded bg-zinc-800/50">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={a.urlToImage} alt="" className="h-full w-full object-cover" />
+                </div>
+              ) : null}
+              <div className="min-w-0 flex-1">
+                <span className="line-clamp-2 text-zinc-200">{a.title}</span>
+                <span className="text-[10px] text-zinc-500">{a.source} · {formatTimeAgo(a.publishedAt)}</span>
+              </div>
             </a>
           ))
         )}

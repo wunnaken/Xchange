@@ -27,7 +27,7 @@ type ImfData = {
   inflation2026: number | null;
 };
 
-type NewsArticle = { title: string; description: string | null; source: string; url: string; publishedAt: string };
+type NewsArticle = { title: string; description: string | null; source: string; url: string; publishedAt: string; image_url?: string | null };
 
 type OutlookData = {
   outlook: string;
@@ -188,12 +188,13 @@ export function CountryDetailPanel({
       const res = await fetch(`/api/map-news?country=${encodeURIComponent(countryName)}`, { cache: "no-store" });
       const data = await res.json();
       const articles = Array.isArray(data?.articles) ? data.articles : [];
-      setNews(articles.map((a: { title?: string; description?: string | null; source?: string; url?: string; publishedAt?: string }) => ({
+      setNews(articles.map((a: { title?: string; description?: string | null; source?: string; url?: string; publishedAt?: string; image_url?: string | null }) => ({
         title: a.title ?? "",
         description: a.description ?? null,
         source: a.source ?? "—",
         url: a.url ?? "#",
         publishedAt: a.publishedAt ?? "",
+        image_url: a.image_url ?? null,
       })));
       if (data?.rateLimited) {
         setNewsError("rate_limit");
@@ -653,16 +654,24 @@ export function CountryDetailPanel({
                     href={a.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="block rounded-lg border border-white/10 bg-white/5 p-3 transition hover:border-[var(--accent-color)]/30 hover:bg-white/10"
+                    className="flex gap-3 rounded-lg border border-white/10 bg-white/5 p-3 transition hover:border-[var(--accent-color)]/30 hover:bg-white/10"
                   >
-                    <p className="line-clamp-2 text-sm font-medium text-zinc-200">{a.title}</p>
-                    <p className="mt-1 text-xs text-zinc-500">
-                      {a.source} · {formatTimeAgo(a.publishedAt)}
-                    </p>
-                    {a.description && (
-                      <p className="mt-1.5 line-clamp-2 text-xs text-zinc-400">{a.description}</p>
-                    )}
-                    <span className="mt-1 inline-block text-xs text-[var(--accent-color)]">Read full story →</span>
+                    {a.image_url ? (
+                      <div className="h-14 w-20 flex-shrink-0 overflow-hidden rounded-md bg-zinc-800/50">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={a.image_url} alt="" className="h-full w-full object-cover" />
+                      </div>
+                    ) : null}
+                    <div className="min-w-0 flex-1">
+                      <p className="line-clamp-2 text-sm font-medium text-zinc-200">{a.title}</p>
+                      <p className="mt-1 text-xs text-zinc-500">
+                        {a.source} · {formatTimeAgo(a.publishedAt)}
+                      </p>
+                      {a.description && (
+                        <p className="mt-1.5 line-clamp-2 text-xs text-zinc-400">{a.description}</p>
+                      )}
+                      <span className="mt-1 inline-block text-xs text-[var(--accent-color)]">Read full story →</span>
+                    </div>
                   </a>
                 </li>
               ))}

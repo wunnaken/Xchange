@@ -15,6 +15,8 @@ export type CEOEntry = {
   sentiment: CEOSentiment;
   marketCap: number;
   recentAlert: boolean;
+  interimNames?: string[];
+  coCeoNames?: string[];
 };
 
 export const CEO_SECTORS = [
@@ -42,7 +44,19 @@ export const CEOS: CEOEntry[] = [
   { id: "TSLA-Elon Musk", name: "Elon Musk", company: "Tesla", ticker: "TSLA", sector: "Technology", tenureStart: 2008, sentiment: "neutral", marketCap: 800, recentAlert: false },
   { id: "ORCL-Safra Catz", name: "Safra Catz", company: "Oracle", ticker: "ORCL", sector: "Technology", tenureStart: 2014, sentiment: "positive", marketCap: 400, recentAlert: false },
   { id: "CRM-Marc Benioff", name: "Marc Benioff", company: "Salesforce", ticker: "CRM", sector: "Technology", tenureStart: 1999, sentiment: "neutral", marketCap: 280, recentAlert: false },
-  { id: "INTC-Pat Gelsinger", name: "Pat Gelsinger", company: "Intel", ticker: "INTC", sector: "Technology", tenureStart: 2021, sentiment: "neutral", marketCap: 180, recentAlert: false },
+  {
+    id: "INTC-David Zinsner",
+    name: "David Zinsner",
+    company: "Intel",
+    ticker: "INTC",
+    sector: "Technology",
+    tenureStart: 2024,
+    sentiment: "neutral",
+    marketCap: 180,
+    recentAlert: false,
+    interimNames: ["David Zinsner", "Michelle Johnston Holthaus"],
+    coCeoNames: ["Michelle Johnston Holthaus"],
+  },
   { id: "AMD-Lisa Su", name: "Lisa Su", company: "AMD", ticker: "AMD", sector: "Technology", tenureStart: 2014, sentiment: "positive", marketCap: 260, recentAlert: false },
   { id: "QCOM-Cristiano Amon", name: "Cristiano Amon", company: "Qualcomm", ticker: "QCOM", sector: "Technology", tenureStart: 2021, sentiment: "neutral", marketCap: 240, recentAlert: false },
   { id: "ADBE-Shantanu Narayen", name: "Shantanu Narayen", company: "Adobe", ticker: "ADBE", sector: "Technology", tenureStart: 2007, sentiment: "positive", marketCap: 220, recentAlert: false },
@@ -98,7 +112,7 @@ export const CEOS: CEOEntry[] = [
   { id: "TGT-Brian Cornell", name: "Brian Cornell", company: "Target", ticker: "TGT", sector: "Consumer", tenureStart: 2014, sentiment: "neutral", marketCap: 75, recentAlert: false },
   { id: "COST-Ron Vachris", name: "Ron Vachris", company: "Costco", ticker: "COST", sector: "Consumer", tenureStart: 2024, sentiment: "neutral", marketCap: 400, recentAlert: true },
   { id: "MCD-Chris Kempczinski", name: "Chris Kempczinski", company: "McDonald's", ticker: "MCD", sector: "Consumer", tenureStart: 2019, sentiment: "neutral", marketCap: 220, recentAlert: false },
-  { id: "SBUX-Laxman Narasimhan", name: "Laxman Narasimhan", company: "Starbucks", ticker: "SBUX", sector: "Consumer", tenureStart: 2023, sentiment: "neutral", marketCap: 105, recentAlert: false },
+  { id: "SBUX-Brian Niccol", name: "Brian Niccol", company: "Starbucks", ticker: "SBUX", sector: "Consumer", tenureStart: 2024, sentiment: "neutral", marketCap: 105, recentAlert: false },
   { id: "NKE-John Donahoe", name: "John Donahoe", company: "Nike", ticker: "NKE", sector: "Consumer", tenureStart: 2020, sentiment: "neutral", marketCap: 145, recentAlert: false },
   { id: "DIS-Bob Iger", name: "Bob Iger", company: "Disney", ticker: "DIS", sector: "Consumer", tenureStart: 2022, sentiment: "neutral", marketCap: 230, recentAlert: false },
   { id: "YUM-David Gibbs", name: "David Gibbs", company: "Yum! Brands", ticker: "YUM", sector: "Consumer", tenureStart: 2020, sentiment: "neutral", marketCap: 42, recentAlert: false },
@@ -107,7 +121,7 @@ export const CEOS: CEOEntry[] = [
   { id: "PG-Jon Moeller", name: "Jon Moeller", company: "Procter & Gamble", ticker: "PG", sector: "Consumer", tenureStart: 2021, sentiment: "neutral", marketCap: 400, recentAlert: false },
   { id: "KO-James Quincey", name: "James Quincey", company: "Coca-Cola", ticker: "KO", sector: "Consumer", tenureStart: 2017, sentiment: "neutral", marketCap: 265, recentAlert: false },
   // INDUSTRIALS (8)
-  { id: "BA-Dave Calhoun", name: "Dave Calhoun", company: "Boeing", ticker: "BA", sector: "Industrials", tenureStart: 2020, sentiment: "negative", marketCap: 120, recentAlert: true },
+  { id: "BA-Kelly Ortberg", name: "Kelly Ortberg", company: "Boeing", ticker: "BA", sector: "Industrials", tenureStart: 2024, sentiment: "neutral", marketCap: 120, recentAlert: true },
   { id: "CAT-Jim Umpleby", name: "Jim Umpleby", company: "Caterpillar", ticker: "CAT", sector: "Industrials", tenureStart: 2017, sentiment: "positive", marketCap: 185, recentAlert: false },
   { id: "GE-Larry Culp", name: "Larry Culp", company: "GE Aerospace", ticker: "GE", sector: "Industrials", tenureStart: 2018, sentiment: "positive", marketCap: 195, recentAlert: false },
   { id: "HON-Vimal Kapur", name: "Vimal Kapur", company: "Honeywell", ticker: "HON", sector: "Industrials", tenureStart: 2023, sentiment: "neutral", marketCap: 140, recentAlert: false },
@@ -129,6 +143,8 @@ export const CEOS: CEOEntry[] = [
   { id: "SOFI-Anthony Noto", name: "Anthony Noto", company: "SoFi", ticker: "SOFI", sector: "Crypto/Fintech", tenureStart: 2018, sentiment: "neutral", marketCap: 12, recentAlert: false },
   { id: "AFRM-Max Levchin", name: "Max Levchin", company: "Affirm", ticker: "AFRM", sector: "Crypto/Fintech", tenureStart: 2012, sentiment: "neutral", marketCap: 12, recentAlert: false },
   { id: "MSTR-Michael Saylor", name: "Michael Saylor", company: "MicroStrategy", ticker: "MSTR", sector: "Crypto/Fintech", tenureStart: 2000, sentiment: "neutral", marketCap: 28, recentAlert: false },
+  // PELOTON (1)
+  { id: "PTON-Chris Bruzzo", name: "Chris Bruzzo", company: "Peloton", ticker: "PTON", sector: "Consumer", tenureStart: 2024, sentiment: "neutral", marketCap: 12, recentAlert: false, coCeoNames: ["Chris Bruzzo"] },
 ];
 
 export function getInitials(name: string): string {

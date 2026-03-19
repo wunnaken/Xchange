@@ -47,8 +47,63 @@ const RSS_FEEDS = [
   "https://feeds.bbci.co.uk/news/business/rss.xml",
 ];
 
-let lastNewsCache: { articles: MarketNewsArticle[]; fetchedAt: number } | null = null;
-const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const CACHE_MS = 6 * 60 * 60 * 1000;
+const cache = new Map<
+  string,
+  { data: MarketNewsArticle[]; fetchedAt: number }
+>();
+
+const NEWSDATA_BASE = "https://newsdata.io/api/1/news";
+
+type NewsDataResult = {
+  title?: string;
+  description?: string;
+  link?: string;
+  source_name?: string;
+  pubDate?: string;
+  image_url?: string;
+};
+
+function normalizeNewsDataResult(r: NewsDataResult): MarketNewsArticle | null {
+  const url = (r.link ?? "").trim();
+  if (!r?.title || !url.startsWith("http")) return null;
+  return {
+    title: String(r.title),
+    description: (r.description ?? "").trim() || null,
+    url,
+    urlToImage: (r.image_url ?? "").trim() || null,
+    source: (r.source_name ?? "—").trim(),
+    publishedAt: r.pubDate ?? new Date().toISOString(),
+  };
+}
+
+async function fetchFromNewsData(
+  apiKey: string,
+  q: string,
+  size: number
+): Promise<MarketNewsArticle[]> {
+  const params = new URLSearchParams({
+    apikey: apiKey,
+    q: q || "business OR markets OR stocks",
+    language: "en",
+    size: String(size),
+  });
+  const res = await fetch(`${NEWSDATA_BASE}?${params.toString()}`, {
+    next: { revalidate: 0 },
+    signal: AbortSignal.timeout(15000),
+  });
+  const data = (await res.json()) as {
+    status?: string;
+    totalResults?: number;
+    results?: NewsDataResult[];
+  };
+  if (!res.ok || data?.status !== "success") return [];
+  const raw = Array.isArray(data?.results) ? data.results : [];
+  return raw
+    .map(normalizeNewsDataResult)
+    .filter((a): a is MarketNewsArticle => a != null)
+    .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+}
 
 function isValidUrl(url: string): boolean {
   return typeof url === "string" && (url.startsWith("http://") || url.startsWith("https://"));
@@ -87,7 +142,7 @@ function parseRssItem(xml: string, sourceName = "News"): MarketNewsArticle[] {
     const link = getTag(block, "link") || getTag(block, "guid");
     const pubDate = getTag(block, "pubDate");
     const description = getTag(block, "description");
-    let url = (link && link.trim().startsWith("http")) ? link.trim() : extractFirstUrl(block);
+    const url = (link && link.trim().startsWith("http")) ? link.trim() : extractFirstUrl(block);
     if (title && url && (url.startsWith("http://") || url.startsWith("https://"))) {
       articles.push({
         title,
@@ -152,116 +207,78 @@ async function fetchRealHeadlinesFromRss(opts?: RequestInit): Promise<MarketNews
 }
 
 export async function GET(request: NextRequest) {
-  const apiKey = process.env.NEWS_API_KEY?.trim();
+  const apiKey = process.env.NEWSDATA_API_KEY?.trim();
   const category = (request.nextUrl.searchParams.get("category") ?? "all").toLowerCase();
   const query = CATEGORY_QUERIES[category] ?? "";
-
-  type RawArticle = { title?: string; description?: string; url?: string; urlToImage?: string; source?: { name?: string }; publishedAt?: string };
+  const cacheKey = `news:${category}`;
 
   try {
-    let raw: RawArticle[] = [];
-
-    if (!apiKey) {
-      let fullList: MarketNewsArticle[];
-      const rssFirst = await fetchRealHeadlinesFromRss();
-      if (rssFirst.length > 0) {
-        lastNewsCache = { articles: rssFirst, fetchedAt: Date.now() };
-        fullList = rssFirst;
-      } else if (lastNewsCache && Date.now() - lastNewsCache.fetchedAt < CACHE_MAX_AGE_MS) {
-        fullList = lastNewsCache.articles;
-      } else {
-        return NextResponse.json({ articles: [], usingLiveFeed: false, fromCache: false });
-      }
-      const filtered = filterArticlesByCategory(fullList, category);
+    const cached = cache.get(cacheKey);
+    if (cached && Date.now() - cached.fetchedAt < CACHE_MS) {
       return NextResponse.json({
-        articles: filtered.length > 0 ? filtered : fullList.slice(0, 10),
-        usingLiveFeed: false,
-        fromCache: fullList === lastNewsCache?.articles,
+        articles: cached.data,
+        usingLiveFeed: true,
+        fromCache: true,
       });
     }
 
-    if (apiKey) {
-      if (!query || category === "all") {
-        const res = await fetch(
-          `https://newsapi.org/v2/top-headlines?country=us&category=business&pageSize=20&apiKey=${apiKey}`,
-          { next: { revalidate: 0 } }
-        );
-        if (res.ok) {
-          const data = (await res.json()) as { status?: string; articles?: RawArticle[] };
-          raw = data?.status !== "error" ? (data?.articles ?? []) : [];
-        }
-        if (raw.length === 0) {
-          const fallback = await fetch(
-            `https://newsapi.org/v2/everything?q=business%20OR%20markets%20OR%20stocks&sortBy=publishedAt&pageSize=20&language=en&apiKey=${apiKey}`,
-            { next: { revalidate: 0 } }
-          );
-          if (fallback.ok) {
-            const data = (await fallback.json()) as { articles?: RawArticle[] };
-            raw = data?.articles ?? [];
-          }
-        }
-      } else {
-        const res = await fetch(
-          `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&sortBy=publishedAt&pageSize=20&language=en&apiKey=${apiKey}`,
-          { next: { revalidate: 0 } }
-        );
-        if (res.ok) {
-          const data = (await res.json()) as { articles?: RawArticle[] };
-          raw = data?.articles ?? [];
-        }
+    if (!apiKey) {
+      const rssFirst = await fetchRealHeadlinesFromRss();
+      if (rssFirst.length > 0) {
+        const filtered = filterArticlesByCategory(rssFirst, category);
+        return NextResponse.json({
+          articles: filtered.length > 0 ? filtered : rssFirst.slice(0, 10),
+          usingLiveFeed: false,
+          fromCache: false,
+        });
       }
+      return NextResponse.json({ articles: [], usingLiveFeed: false, fromCache: false });
     }
 
-    let articles: MarketNewsArticle[] = raw
-      .filter((a) => a?.title && isValidUrl(a.url ?? ""))
-      .map((a) => ({
-        title: a.title ?? "",
-        description: a.description?.trim() || null,
-        url: (a.url ?? "").trim(),
-        urlToImage: a.urlToImage?.trim() || null,
-        source: a.source?.name ?? "—",
-        publishedAt: a.publishedAt ?? "",
-      }))
-      .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+    const searchQ = query && category !== "all" ? query : "business OR markets OR stocks";
+    let articles = await fetchFromNewsData(apiKey, searchQ, 20);
+
+    if (articles.length === 0 && (category === "all" || !query)) {
+      articles = await fetchFromNewsData(apiKey, "business OR markets", 20);
+    }
 
     if (articles.length === 0) {
       const rssFallback = await fetchRealHeadlinesFromRss();
       articles = filterArticlesByCategory(rssFallback, category);
       if (articles.length === 0 && rssFallback.length > 0) articles = rssFallback.slice(0, 10);
-    }
-
-    if (articles.length > 0 && raw.length > 0) {
-      lastNewsCache = { articles, fetchedAt: Date.now() };
-    } else if (articles.length === 0 && lastNewsCache && Date.now() - lastNewsCache.fetchedAt < CACHE_MAX_AGE_MS) {
-      articles = filterArticlesByCategory(lastNewsCache.articles, category);
-      if (articles.length === 0) articles = lastNewsCache.articles.slice(0, 10);
+    } else {
+      articles = filterArticlesByCategory(articles, category);
+      if (articles.length === 0 && cached?.data?.length) {
+        articles = cached.data.slice(0, 10);
+      }
+      cache.set(cacheKey, { data: articles, fetchedAt: Date.now() });
     }
 
     return NextResponse.json({
       articles,
-      usingLiveFeed: articles.length > 0 && raw.length > 0,
-      fromCache: articles.length > 0 && raw.length === 0,
+      usingLiveFeed: articles.length > 0,
+      fromCache: false,
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : "Unknown error";
     console.error("[news API]", message);
+    const cached = cache.get(cacheKey);
+    if (cached && cached.data.length > 0) {
+      const filtered = filterArticlesByCategory(cached.data, category);
+      return NextResponse.json({
+        articles: filtered.length > 0 ? filtered : cached.data.slice(0, 10),
+        usingLiveFeed: true,
+        fromCache: true,
+      });
+    }
     try {
       const fallback = await fetchRealHeadlinesFromRss();
       if (fallback.length > 0) {
-        lastNewsCache = { articles: fallback, fetchedAt: Date.now() };
         const filtered = filterArticlesByCategory(fallback, category);
         return NextResponse.json({
           articles: filtered.length > 0 ? filtered : fallback.slice(0, 10),
           usingLiveFeed: false,
           fromCache: false,
-        });
-      }
-      if (lastNewsCache && Date.now() - lastNewsCache.fetchedAt < CACHE_MAX_AGE_MS) {
-        const filtered = filterArticlesByCategory(lastNewsCache.articles, category);
-        return NextResponse.json({
-          articles: filtered.length > 0 ? filtered : lastNewsCache.articles.slice(0, 10),
-          usingLiveFeed: false,
-          fromCache: true,
         });
       }
     } catch {

@@ -126,7 +126,20 @@ export async function GET(request: NextRequest) {
   // Finnhub's "BTC" is a different asset (~$32); we must show real Bitcoin (~$75k).
   if (COINGECKO_CRYPTO_IDS[ticker] !== undefined) {
     const crypto = await fetchCryptoQuote(ticker);
-    if (crypto) return NextResponse.json(crypto);
+    if (crypto?.price != null && Number.isFinite(crypto.price) && crypto.price > 0) {
+      return NextResponse.json(crypto);
+    }
+    // CoinGecko often 429/blocks datacenter IPs; Finnhub Binance pairs return real spot (~$3k+ ETH, not wrong "ETH" stock)
+    const key = process.env.FINNHUB_API_KEY?.trim();
+    if (key) {
+      const binanceSym = ticker === "BTC" || ticker === "BITCOIN" ? "BINANCE:BTCUSDT" : "BINANCE:ETHUSDT";
+      const finn = await fetchFinnhubQuote(binanceSym, key);
+      const p = finn?.price;
+      if (finn && typeof p === "number" && Number.isFinite(p) && p > 0) {
+        const min = ticker === "BTC" || ticker === "BITCOIN" ? 1000 : 100;
+        if (p >= min) return NextResponse.json(finn);
+      }
+    }
     const empty: TickerQuote = { price: null, change: null, changePercent: null, volume: null, high: null, low: null, open: null, previousClose: null };
     return NextResponse.json(empty);
   }

@@ -175,6 +175,121 @@ const defaultFilters = (): FilterState => ({
   marketCap: "all",
 });
 
+type QuickPresetId = "spy500" | "qqq100" | "dow30" | "magnificent7" | "techGiants";
+
+const QUICK_PRESET_BUTTON_LABEL: Record<QuickPresetId, string> = {
+  spy500: "SPY 500",
+  qqq100: "QQQ 100",
+  dow30: "Dow 30",
+  magnificent7: "Magnificent 7",
+  techGiants: "Tech Giants",
+};
+
+const QUICK_PRESET_SHOW_LABEL: Record<QuickPresetId, string> = {
+  // Special wording requested
+  spy500: "S&P 500 Companies",
+  qqq100: "QQQ 100",
+  dow30: "Dow 30",
+  magnificent7: "Magnificent 7",
+  techGiants: "Tech Giants",
+};
+
+const QUICK_PRESET_TICKERS: Record<QuickPresetId, Set<string> | null> = {
+  // All our CEOs are treated as belonging to the “S&P 500” preset.
+  spy500: null,
+  qqq100: new Set([
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "GOOGL",
+    "AMZN",
+    "META",
+    "TSLA",
+    "AVGO",
+    "COST",
+    "NFLX",
+    "AMD",
+    "ADBE",
+    "QCOM",
+    "INTC",
+    "CSCO",
+    "TXN",
+    "AMGN",
+    "HON",
+    "SBUX",
+    "ISRG",
+    "VRTX",
+    "ADP",
+    "PANW",
+    "LRCX",
+    "MDLZ",
+    "REGN",
+    "GILD",
+    "PYPL",
+    "MELI",
+    "KDP",
+  ]),
+  dow30: new Set([
+    "AAPL",
+    "MSFT",
+    "UNH",
+    "GS",
+    "HD",
+    "MCD",
+    "CAT",
+    "AMGN",
+    "V",
+    "BA",
+    "CRM",
+    "HON",
+    "IBM",
+    "JPM",
+    "AXP",
+    "JNJ",
+    "WMT",
+    "PG",
+    "TRV",
+    "CVX",
+    "MMM",
+    "MRK",
+    "DIS",
+    "NKE",
+    "DOW",
+    "INTC",
+    "VZ",
+    "CSCO",
+    "KO",
+    "WBA",
+  ]),
+  magnificent7: new Set(["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA"]),
+  techGiants: new Set([
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "GOOGL",
+    "AMZN",
+    "META",
+    "TSLA",
+    "ORCL",
+    "CRM",
+    "ADBE",
+    "INTC",
+    "AMD",
+    "QCOM",
+    "SHOP",
+    "UBER",
+    "NFLX",
+    "SPOT",
+  ]),
+};
+
+function getLastName(fullName: string): string {
+  const parts = fullName.trim().split(/\s+/).filter(Boolean);
+  const last = parts[parts.length - 1] ?? "";
+  // Keep simple punctuation so “O'Neil” still reads nicely.
+  return last.replace(/[^\p{L}'-]/gu, "");
+}
+
 function filterCEOs(ceos: CEOEntry[], filters: FilterState): CEOEntry[] {
   return ceos.filter((c) => {
     if (filters.search) {
@@ -200,7 +315,7 @@ function filterCEOs(ceos: CEOEntry[], filters: FilterState): CEOEntry[] {
 type ConstellationNode = CEOEntry & { id: string; val: number; tier: number; fx: number; fy: number };
 
 function buildGraphData(ceos: CEOEntry[]): { nodes: ConstellationNode[]; links: { source: string; target: string }[] } {
-  const rnd = seedRandom("constellation");
+  const rnd = seedRandom(`constellation:${ceos.length}:${ceos.map((c) => c.ticker).slice(0, 6).join(",")}`);
   const byTier = new Map<number, CEOEntry[]>();
   ceos.forEach((c) => {
     const t = getTier(c.marketCap);
@@ -212,28 +327,40 @@ function buildGraphData(ceos: CEOEntry[]): { nodes: ConstellationNode[]; links: 
     list.sort((a, b) => b.marketCap - a.marketCap);
   });
 
-  const padding = 120;
   const nodes: ConstellationNode[] = [];
 
-  [1, 2, 3, 4, 5].forEach((tier) => {
-    const list = byTier.get(tier) ?? [];
-    const count = list.length;
-    const baseY = tierY(tier);
-    const radius = tierRadius(tier);
-    list.forEach((c, i) => {
-      const x = count <= 1 ? CANVAS_W / 2 : padding + (i / (count - 1)) * (CANVAS_W - 2 * padding);
-      const y = baseY + (rnd() - 0.5) * 60;
-      const node: ConstellationNode = {
-        ...c,
-        id: c.id,
-        val: radius,
-        tier,
-        fx: x,
-        fy: y,
-      };
-      nodes.push(node);
+  if (ceos.length >= 220) {
+    // Large universes (SPY 500): spread nodes to avoid clumping.
+    const pad = 90;
+    const cols = Math.ceil(Math.sqrt(ceos.length));
+    const rows = Math.ceil(ceos.length / cols);
+    const cellW = (CANVAS_W - pad * 2) / Math.max(1, cols);
+    const cellH = (CANVAS_H - pad * 2) / Math.max(1, rows);
+    const sorted = [...ceos].sort((a, b) => (b.marketCap ?? 0) - (a.marketCap ?? 0));
+    sorted.forEach((c, i) => {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const x = pad + col * cellW + cellW * (0.15 + rnd() * 0.7);
+      const y = pad + row * cellH + cellH * (0.15 + rnd() * 0.7);
+      const tier = getTier(c.marketCap);
+      const radius = tierRadius(tier);
+      nodes.push({ ...c, id: c.id, val: radius, tier, fx: x, fy: y });
     });
-  });
+  } else {
+    // Smaller universes: tier bands.
+    const padding = 120;
+    [1, 2, 3, 4, 5].forEach((tier) => {
+      const list = byTier.get(tier) ?? [];
+      const count = list.length;
+      const baseY = tierY(tier);
+      const radius = tierRadius(tier);
+      list.forEach((c, i) => {
+        const x = count <= 1 ? CANVAS_W / 2 : padding + (i / (count - 1)) * (CANVAS_W - 2 * padding);
+        const y = baseY + (rnd() - 0.5) * 60;
+        nodes.push({ ...c, id: c.id, val: radius, tier, fx: x, fy: y });
+      });
+    });
+  }
 
   const links: { source: string; target: string }[] = [];
   const linkSet = new Set<string>();
@@ -281,11 +408,122 @@ function buildGraphData(ceos: CEOEntry[]): { nodes: ConstellationNode[]; links: 
   return { nodes, links };
 }
 
+type CEOAlertItem = {
+  title: string;
+  url: string;
+  source: string;
+  publishedAt: string;
+  company?: string;
+  matchedTicker?: string;
+};
+
 const NODE_COLORS: Record<string, string> = {
   positive: "#00C896",
   neutral: "#60A5FA",
   negative: "#EF4444",
 };
+
+/** Placeholder tickers used in index presets before real symbols load — not valid for Finnhub/Claude company resolution. */
+function isSyntheticMapTicker(ticker: string): boolean {
+  const t = ticker.toUpperCase().trim();
+  return (
+    /^SPY500_\d+$/.test(t) ||
+    t.startsWith("SPY500_FILL_") ||
+    t.startsWith("QQQ100_FILL_") ||
+    t.startsWith("DOW30_FILL_")
+  );
+}
+
+const CEO_PROFILE_CACHE_VER = "v3";
+
+function ceoProfileCacheKey(ticker: string): string {
+  return `${ticker.toUpperCase()}:${CEO_PROFILE_CACHE_VER}`;
+}
+
+type CeoClaudeProfile = {
+  tenure_start: string;
+  tenure_years: number;
+  legal_history: string | null;
+  legal_severity: "none" | "minor" | "significant";
+  sentiment: "Bullish" | "Bearish" | "Neutral";
+  sentiment_reason: string;
+  /** Approximate total return since CEO start; null if unknown */
+  stock_since_tenure_percent_approx: number | null;
+  /** One line for UI, e.g. approximate return narrative */
+  stock_since_tenure_summary: string;
+};
+
+function mapClaudeSentimentToTint(s: string): "bullish" | "bearish" | "neutral" | null {
+  const u = s.trim().toLowerCase();
+  if (u === "bullish") return "bullish";
+  if (u === "bearish") return "bearish";
+  if (u === "neutral") return "neutral";
+  return null;
+}
+
+function parseCeoClaudeProfile(raw: string): CeoClaudeProfile | null {
+  let s = raw.trim();
+  const fence = s.match(/^```(?:json)?\s*([\s\S]*?)```$/im);
+  if (fence?.[1]) s = fence[1].trim();
+  try {
+    const o = JSON.parse(s) as Record<string, unknown>;
+    const tenure_start = typeof o.tenure_start === "string" ? o.tenure_start : "";
+    const tyRaw = o.tenure_years;
+    const tenure_years =
+      typeof tyRaw === "number" && !Number.isNaN(tyRaw)
+        ? tyRaw
+        : typeof tyRaw === "string"
+          ? Number.parseFloat(tyRaw) || 0
+          : 0;
+    let legal_history: string | null = null;
+    if (o.legal_history === null) legal_history = null;
+    else if (typeof o.legal_history === "string") legal_history = o.legal_history;
+    const leg = typeof o.legal_severity === "string" ? o.legal_severity.toLowerCase() : "";
+    const legal_severity: CeoClaudeProfile["legal_severity"] =
+      leg === "minor" || leg === "significant" || leg === "none" ? leg : "none";
+    const sentRaw = typeof o.sentiment === "string" ? o.sentiment.trim().toLowerCase() : "";
+    const sentiment: CeoClaudeProfile["sentiment"] =
+      sentRaw === "bullish" ? "Bullish" : sentRaw === "bearish" ? "Bearish" : "Neutral";
+    const sentiment_reason = typeof o.sentiment_reason === "string" ? o.sentiment_reason : "";
+    const spRaw = o.stock_since_tenure_percent_approx;
+    let stock_since_tenure_percent_approx: number | null = null;
+    if (spRaw === null) stock_since_tenure_percent_approx = null;
+    else if (typeof spRaw === "number" && Number.isFinite(spRaw)) stock_since_tenure_percent_approx = spRaw;
+    else if (typeof spRaw === "string") {
+      const n = Number.parseFloat(spRaw);
+      stock_since_tenure_percent_approx = Number.isFinite(n) ? n : null;
+    }
+    const stock_since_tenure_summary =
+      typeof o.stock_since_tenure_summary === "string" ? o.stock_since_tenure_summary.trim() : "";
+    return {
+      tenure_start,
+      tenure_years,
+      legal_history,
+      legal_severity,
+      sentiment,
+      sentiment_reason,
+      stock_since_tenure_percent_approx,
+      stock_since_tenure_summary,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function claudeSentimentStyles(sentiment: CeoClaudeProfile["sentiment"]) {
+  switch (sentiment) {
+    case "Bullish":
+      return { color: "#00ff88", bg: "#00ff8822", border: "#00ff8855" };
+    case "Bearish":
+      return { color: "#ff4444", bg: "#ff444422", border: "#ff444455" };
+    default:
+      return { color: "#60A5FA", bg: "#60A5FA22", border: "#60A5FA55" };
+  }
+}
+
+function PanelFieldSkeleton({ className }: { className?: string }) {
+  return <div className={`animate-pulse rounded-md bg-white/10 ${className ?? "h-4 w-full"}`} />;
+}
 
 function CEOGraph({
   graphData,
@@ -295,6 +533,7 @@ function CEOGraph({
   highlightSector,
   hoveredNodeId,
   chartLocked,
+  claudeTintByTicker,
   onNodeHover,
   onNodeClick,
   onNodeRightClick,
@@ -308,11 +547,17 @@ function CEOGraph({
   highlightSector: string | null;
   hoveredNodeId: string | null;
   chartLocked: boolean;
+  claudeTintByTicker: Record<string, "bullish" | "bearish" | "neutral">;
   onNodeHover: (node: CEOEntry | null) => void;
   onNodeClick: (node: CEOEntry) => void;
   onNodeRightClick: (node: CEOEntry) => void;
   onCameraChange?: (k: number, x: number, y: number) => void;
-  graphRef: React.RefObject<{ zoomToFit: (a?: number, b?: number, c?: (n: unknown) => boolean) => void; zoom: (n: number, ms?: number) => void; centerAt: (x?: number, y?: number, ms?: number) => void } | null>;
+  graphRef: React.RefObject<{
+    zoomToFit: (a?: number, b?: number, c?: (n: unknown) => boolean) => void;
+    zoom: (n: number, ms?: number) => void;
+    centerAt: (x?: number, y?: number, ms?: number) => void;
+    graph2ScreenCoords: (x: number, y: number) => { x: number; y: number };
+  } | null>;
 }) {
   const [ForceGraph2D, setForceGraph2D] = useState<React.ComponentType<Record<string, unknown>> | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -342,6 +587,27 @@ function CEOGraph({
     return () => ro.disconnect();
   }, []);
 
+  const [hoverTooltip, setHoverTooltip] = useState<{ ceo: CEOEntry; x: number; y: number } | null>(null);
+  const hoverTooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoverTooltipNodeIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (hoverTooltipTimerRef.current) clearTimeout(hoverTooltipTimerRef.current);
+    };
+  }, []);
+
+  const resolveNodeColor = useCallback(
+    (n: ConstellationNode) => {
+      const t = (n.ticker ?? "").toUpperCase();
+      const tint = claudeTintByTicker[t];
+      if (tint === "bullish") return "#00ff88";
+      if (tint === "bearish") return "#ff4444";
+      return NODE_COLORS[n.sentiment as string] ?? NODE_COLORS.neutral;
+    },
+    [claudeTintByTicker]
+  );
+
   const onRenderFramePre = useCallback((ctx: CanvasRenderingContext2D) => {
     const cx = CANVAS_W / 2;
     const cy = CANVAS_H / 2;
@@ -359,21 +625,48 @@ function CEOGraph({
       const px = n.x ?? n.fx;
       const py = n.y ?? n.fy;
       if (px == null || py == null) return;
-      const r = Math.max(node.val, 14);
+      const circleR = Math.max(node.val, 14);
       const isDimmed = dimmedIds.has(node.id) || (hoveredNodeId && hoveredNodeId !== node.id && !connectedToHover.has(node.id));
       const selected = selectedId === node.id || compareIds.has(node.id);
-      const label = truncateCompany(node.company, 12);
-      const fontSize = Math.max(11, Math.min(14, r * 0.55));
+
+      const nodeAlpha = isDimmed && hoveredNodeId ? 0.35 : highlightSector && node.sector !== highlightSector ? 0.5 : 1;
+
+      // Canvas labels: fade in based on zoom to prevent crowding.
+      const fadeStart = 0.6;
+      const fadeEnd = 1.0;
+      const fade = Math.max(0, Math.min(1, (globalScale - fadeStart) / (fadeEnd - fadeStart)));
+      const tierGate = node.tier === 1 ? 0 : node.tier === 2 ? 0.15 : node.tier === 3 ? 0.3 : 0.55;
+      const labelAlphaBase = Math.max(0, (fade - tierGate) / (1 - tierGate));
+
+      const zoomTextScale = Math.max(0.85, Math.min(1.2, globalScale));
+
+      let tickerText = (node.ticker ?? "").toUpperCase();
+      let lastName = getLastName(node.name);
+
+      const showSecondLine = node.tier <= 3;
+      if (!showSecondLine) {
+        // Tiny nodes: ticker only (truncate long tickers)
+        if (tickerText.length > 5) tickerText = tickerText.slice(0, 3);
+      } else {
+        // Large/medium/small nodes: ticker + last name
+        if (tickerText.length > 6) tickerText = tickerText.slice(0, 5);
+        if (lastName.length > 10) lastName = lastName.slice(0, 9) + "…";
+      }
+
+      const { tickerFontSize, nameFontSize } = (() => {
+        if (node.tier === 1) return { tickerFontSize: 11 * zoomTextScale, nameFontSize: 9 * zoomTextScale };
+        if (node.tier === 2) return { tickerFontSize: 9 * zoomTextScale, nameFontSize: 8 * zoomTextScale };
+        if (node.tier === 3) return { tickerFontSize: 8 * zoomTextScale, nameFontSize: 7 * zoomTextScale };
+        return { tickerFontSize: 7 * zoomTextScale, nameFontSize: 0 };
+      })();
 
       ctx.save();
-      if (isDimmed && hoveredNodeId) ctx.globalAlpha = 0.35;
-      else if (highlightSector && node.sector !== highlightSector) ctx.globalAlpha = 0.5;
-      else ctx.globalAlpha = 1;
+      ctx.globalAlpha = nodeAlpha;
 
       ctx.strokeStyle = "rgba(255,255,255,0.25)";
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.arc(px, py, r + 1, 0, 2 * Math.PI);
+      ctx.arc(px, py, circleR + 1, 0, 2 * Math.PI);
       ctx.stroke();
 
       if (node.recentAlert) {
@@ -387,12 +680,30 @@ function CEOGraph({
         ctx.stroke();
       }
 
-      ctx.globalAlpha = 1;
-      ctx.font = `${fontSize}px system-ui, sans-serif`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillStyle = "#fff";
-      ctx.fillText(label, px, py);
+      // Draw text labels (ticker + last name) when enabled.
+      if (labelAlphaBase > 0) {
+        const finalAlpha = nodeAlpha * labelAlphaBase;
+        if (finalAlpha > 0) {
+          ctx.globalAlpha = finalAlpha;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillStyle = "#fff";
+          ctx.font = `800 ${tickerFontSize}px system-ui, sans-serif`;
+
+          const gap = Math.max(1, tickerFontSize * 0.15);
+
+          if (showSecondLine && nameFontSize > 0) {
+            const y1 = py - (nameFontSize / 2 + gap / 2);
+            const y2 = py + (tickerFontSize / 2 + gap / 2);
+            ctx.fillText(tickerText, px, y1);
+            ctx.fillStyle = "#A1A1AA";
+            ctx.font = `400 ${nameFontSize}px system-ui, sans-serif`;
+            ctx.fillText(lastName, px, y2);
+          } else {
+            ctx.fillText(tickerText, px, py);
+          }
+        }
+      }
       ctx.restore();
     },
     [selectedId, compareIds, dimmedIds, highlightSector, hoveredNodeId, connectedToHover]
@@ -428,11 +739,6 @@ function CEOGraph({
 
   // Initial camera is applied by parent (CEOsPage) so saved position can be restored
 
-  const nodeLabel = useCallback(
-    (n: CEOEntry) => `${n.name}\n${n.company} · ${n.ticker}\nCEO since ${n.tenureStart}`,
-    []
-  );
-
   if (!ForceGraph2D) {
     return (
       <div ref={containerRef} className="flex h-full w-full items-center justify-center" style={{ background: "radial-gradient(ellipse at center, #0D1B3E 0%, #050B1A 100%)" }}>
@@ -451,7 +757,7 @@ function CEOGraph({
   return (
     <div
       ref={containerRef}
-      className="h-full w-full overflow-hidden"
+      className="relative h-full w-full overflow-hidden"
       style={{ background: "#050B1A" }}
       onWheel={(e) => e.stopPropagation()}
     >
@@ -461,14 +767,17 @@ function CEOGraph({
         nodeId="id"
         linkSource="source"
         linkTarget="target"
+        // Disable react-force-graph's built-in tooltip content.
+        // We render our own richer hover overlay above.
+        nodeLabel={() => ""}
+        linkLabel={() => ""}
         nodeVal={(n: ConstellationNode) => Math.max(n.val, 14)}
-        nodeColor={(n: { sentiment?: string }) => NODE_COLORS[n.sentiment as string] ?? NODE_COLORS.neutral}
+        nodeColor={resolveNodeColor}
         linkColor={() => LINK_COLOR}
         linkWidth={0.8}
         backgroundColor="transparent"
         width={size.w}
         height={size.h}
-        nodeLabel={nodeLabel}
         nodeCanvasObjectMode="after"
         nodeCanvasObject={nodeCanvasObject}
         linkCanvasObjectMode="after"
@@ -486,9 +795,30 @@ function CEOGraph({
           const ceo = graphData.nodes.find((x) => x.id === n?.id);
           if (ceo) onNodeRightClick(ceo);
         }}
-        onNodeHover={(n: { id?: string } | null) => {
+        onNodeHover={(n: { id?: string; x?: number; y?: number; fx?: number; fy?: number } | null) => {
+          if (hoverTooltipTimerRef.current) clearTimeout(hoverTooltipTimerRef.current);
+
           const ceo = n ? graphData.nodes.find((x) => x.id === n.id) ?? null : null;
           onNodeHover(ceo ?? null);
+
+          if (!ceo || !n) {
+            hoverTooltipNodeIdRef.current = null;
+            setHoverTooltip(null);
+            return;
+          }
+
+          const nodeX = n.x ?? n.fx;
+          const nodeY = n.y ?? n.fy;
+          if (nodeX == null || nodeY == null) return;
+
+          const thisId = ceo.id;
+          hoverTooltipNodeIdRef.current = thisId;
+          hoverTooltipTimerRef.current = setTimeout(() => {
+            if (hoverTooltipNodeIdRef.current !== thisId) return;
+            if (!graphRef.current) return;
+            const sc = graphRef.current.graph2ScreenCoords(nodeX, nodeY);
+            setHoverTooltip({ ceo, x: sc.x, y: sc.y });
+          }, 100);
         }}
         onZoomEnd={onCameraChange ? (t: { k: number; x: number; y: number }) => onCameraChange(t.k, t.x, t.y) : undefined}
         autoPauseRedraw={true}
@@ -501,6 +831,60 @@ function CEOGraph({
         minZoom={0.28}
         maxZoom={4}
       />
+
+      {hoverTooltip && (
+        <div
+          className="pointer-events-none absolute z-50 max-w-[260px] rounded-lg border border-white/10 bg-[#0F1520]/95 px-3 py-2 shadow-xl backdrop-blur"
+          style={{
+            left: hoverTooltip.x,
+            top: hoverTooltip.y,
+            transform: "translate(-50%, -105%)",
+          }}
+        >
+          {(() => {
+            const c = hoverTooltip.ceo;
+            const t = (c.ticker ?? "").toUpperCase();
+            const synthetic = isSyntheticMapTicker(t);
+            const sent = sentimentColor(c.sentiment);
+            const presetLabel = t.startsWith("SPY500_") || t.startsWith("SPY500_FILL_")
+              ? "S&P 500 grid"
+              : t.startsWith("QQQ100_FILL_")
+                ? "Nasdaq 100 grid"
+                : t.startsWith("DOW30_FILL_")
+                  ? "Dow 30 grid"
+                  : null;
+            return (
+              <>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0 text-[13px] font-bold leading-tight text-zinc-100">{c.name}</div>
+                  <span
+                    className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium"
+                    style={{
+                      backgroundColor: sent + "22",
+                      color: sent,
+                      border: `1px solid ${sent}55`,
+                    }}
+                  >
+                    {c.sentiment === "positive" ? "Positive" : c.sentiment === "negative" ? "Negative" : "Neutral"}
+                  </span>
+                </div>
+                {!synthetic ? (
+                  <div className="mt-1 text-[11px] font-medium text-zinc-300">{t}</div>
+                ) : presetLabel ? (
+                  <div className="mt-1 text-[10px] text-zinc-500">{presetLabel}</div>
+                ) : null}
+                <div className="mt-0.5 text-[11px] text-zinc-400">{c.company}</div>
+                {c.interimNames?.length ? (
+                  <div className="mt-1 text-[10px] text-amber-200">Interim: {c.interimNames[0]}</div>
+                ) : null}
+                {c.coCeoNames?.length ? (
+                  <div className="text-[10px] text-violet-200">Co-CEOs</div>
+                ) : null}
+              </>
+            );
+          })()}
+        </div>
+      )}
     </div>
   );
 }
@@ -510,7 +894,15 @@ function FilterPanel({
   onFiltersChange,
   alertsCount,
   ceoOfWeek,
-  onSelectCEO,
+  recentAlerts,
+  ceoOfWeekAlertTitle,
+  weeklyAlerts,
+  activeQuickPreset,
+  onQuickPresetChange,
+  presetShownCount,
+  allViewLabel,
+  activePresetShowLabel,
+  onSelectTicker,
   collapsed,
   onToggleCollapse,
 }: {
@@ -518,11 +910,41 @@ function FilterPanel({
   onFiltersChange: (f: FilterState) => void;
   alertsCount: number;
   ceoOfWeek: CEOEntry | null;
-  onSelectCEO: (c: CEOEntry) => void;
+  recentAlerts: CEOAlertItem[];
+  ceoOfWeekAlertTitle?: string | null;
+  weeklyAlerts: CEOAlertItem[];
+  activeQuickPreset: QuickPresetId | null;
+  onQuickPresetChange: (id: QuickPresetId | null) => void;
+  presetShownCount: number;
+  allViewLabel: string;
+  activePresetShowLabel: string | null;
+  onSelectTicker: (ticker: string) => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
 }) {
-  const alerts = CEOS.filter((c) => c.recentAlert);
+  const [nowMs, setNowMs] = useState(0);
+  useEffect(() => {
+    const id = window.setTimeout(() => setNowMs(Date.now()), 0);
+    const t = window.setInterval(() => setNowMs(Date.now()), 60 * 1000);
+    return () => {
+      window.clearTimeout(id);
+      window.clearInterval(t);
+    };
+  }, []);
+
+  const timeAgo = (iso: string) => {
+    const ts = Date.parse(iso);
+    if (!Number.isFinite(ts)) return "";
+    if (!nowMs) return "";
+    const s = Math.max(0, Math.floor((nowMs - ts) / 1000));
+    if (s < 60) return `${s}s ago`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    const d = Math.floor(h / 24);
+    return `${d}d ago`;
+  };
 
   return (
     <div
@@ -545,6 +967,53 @@ function FilterPanel({
       </button>
       {!collapsed && (
         <div className="scrollbar-hide flex min-h-0 flex-1 flex-col gap-4 p-4 pt-12">
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs font-medium text-zinc-400">Quick Filter</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => onQuickPresetChange(null)}
+                className={`rounded-full border px-3 py-1.5 text-[11px] transition ${
+                  activeQuickPreset === null
+                    ? "border-[var(--accent-color)] bg-[var(--accent-color)]/15 text-[var(--accent-color)]"
+                    : "border-white/10 bg-white/5 text-zinc-400 hover:border-white/20 hover:bg-white/10 hover:text-zinc-200"
+                }`}
+              >
+                {allViewLabel}
+              </button>
+              {(
+                [
+                  "spy500",
+                  "qqq100",
+                  "dow30",
+                  "techGiants",
+                  "magnificent7",
+                ] as QuickPresetId[]
+              ).map((id) => {
+                const btnLabel = QUICK_PRESET_BUTTON_LABEL[id];
+                const isActive = activeQuickPreset === id;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => onQuickPresetChange(isActive ? null : id)}
+                    className={`rounded-full border px-3 py-1.5 text-[11px] transition ${
+                      isActive
+                        ? "border-[var(--accent-color)] bg-[var(--accent-color)]/15 text-[var(--accent-color)]"
+                        : "border-white/10 bg-white/5 text-zinc-400 hover:border-white/20 hover:bg-white/10 hover:text-zinc-200"
+                    }`}
+                  >
+                    {btnLabel}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-2 text-[10px] text-zinc-500">
+              Showing {presetShownCount} CEOs in {activeQuickPreset ? activePresetShowLabel : allViewLabel}
+            </p>
+          </div>
           <div>
             <div className="mb-2 flex items-center justify-between">
               <span className="text-xs font-medium text-zinc-400">Sector</span>
@@ -616,25 +1085,82 @@ function FilterPanel({
               <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--accent-color)]">CEO of the week</p>
               <p className="mt-1 font-semibold text-zinc-100">{ceoOfWeek.name}</p>
               <p className="text-xs text-zinc-400">{ceoOfWeek.company} ({ceoOfWeek.ticker})</p>
-              <p className="mt-1 text-[10px] text-zinc-500">Most talked about this week</p>
-              <button type="button" onClick={() => onSelectCEO(ceoOfWeek)} className="mt-2 text-xs text-[var(--accent-color)] hover:underline">View on graph →</button>
+              <p className="mt-1 text-[10px] text-zinc-500">{ceoOfWeekAlertTitle ?? "Most talked about this week"}</p>
+              <button type="button" onClick={() => onSelectTicker(ceoOfWeek.ticker)} className="mt-2 text-xs text-[var(--accent-color)] hover:underline">View on graph →</button>
             </div>
           )}
           <div className="border-t border-white/10 pt-3">
             <p className="mb-2 text-xs font-medium text-zinc-400">Recent alerts</p>
-            {alerts.length === 0 ? (
+            {recentAlerts.length === 0 ? (
               <p className="text-xs text-zinc-500">No recent CEO changes</p>
             ) : (
               <ul className="space-y-2">
-                {alerts.slice(0, 8).map((c) => (
-                  <li key={c.id}>
-                    <button type="button" onClick={() => onSelectCEO(c)} className="flex w-full items-center gap-2 text-left text-sm text-zinc-300 hover:text-zinc-100">
-                      <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" />
-                      {c.name}
-                      <span className="text-[10px] text-zinc-500">New CEO / News</span>
-                    </button>
-                  </li>
-                ))}
+                {recentAlerts.slice(0, 5).map((a) => {
+                  const t = (a.matchedTicker ?? "").toUpperCase();
+                  return (
+                    <li key={a.url}>
+                      <a
+                        href={a.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="block rounded-md px-2 py-1 hover:bg-white/5"
+                        onClick={(e) => {
+                          if (t) {
+                            e.preventDefault();
+                            onSelectTicker(t);
+                          }
+                        }}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-medium text-zinc-200">{a.company ?? "Company"}</span>
+                              {t ? <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-zinc-300">{t}</span> : null}
+                            </div>
+                            <div className="mt-0.5 line-clamp-2 text-xs text-zinc-300">{a.title}</div>
+                          </div>
+                        </div>
+                        <div className="mt-1 text-[10px] text-zinc-500">{a.source} · {timeAgo(a.publishedAt)}</div>
+                      </a>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+          <div className="border-t border-white/10 pt-3">
+            <p className="mb-2 text-xs font-medium text-zinc-400">Weekly CEO changes</p>
+            {weeklyAlerts.length === 0 ? (
+              <p className="text-xs text-zinc-500">No CEO change headlines this week</p>
+            ) : (
+              <ul className="space-y-2">
+                {weeklyAlerts.slice(0, 10).map((a) => {
+                  const t = (a.matchedTicker ?? "").toUpperCase();
+                  return (
+                    <li key={a.url}>
+                      <a
+                        href={a.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="block rounded-md px-2 py-1 hover:bg-white/5"
+                        onClick={(e) => {
+                          if (t) {
+                            e.preventDefault();
+                            onSelectTicker(t);
+                          }
+                        }}
+                        title={a.title}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-medium text-zinc-200">{a.company ?? "Company"}</span>
+                          {t ? <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-zinc-300">{t}</span> : null}
+                        </div>
+                        <div className="mt-0.5 line-clamp-2 text-xs text-zinc-300">{a.title.length > 80 ? a.title.slice(0, 80) + "…" : a.title}</div>
+                        <div className="mt-1 text-[10px] text-zinc-500">{a.source} · {timeAgo(a.publishedAt)}</div>
+                      </a>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
@@ -648,26 +1174,118 @@ function DetailPanel({
   ceo,
   onClose,
   alertsCount,
+  profileCacheRef,
+  onClaudeGraphSentiment,
 }: {
   ceo: CEOEntry;
   onClose: () => void;
   alertsCount: number;
+  profileCacheRef: React.MutableRefObject<Map<string, CeoClaudeProfile>>;
+  onClaudeGraphSentiment: (ticker: string, tint: "bullish" | "bearish" | "neutral") => void;
 }) {
   const [news, setNews] = useState<{ title: string; url: string; source: string; publishedAt: string; sentiment: string }[]>([]);
+  const [newsOverallSentiment, setNewsOverallSentiment] = useState<"positive" | "neutral" | "negative" | null>(null);
   const [legal, setLegal] = useState<{ date: string; headline: string; url: string; source: string; active: boolean }[]>([]);
-  const [quote, setQuote] = useState<{ price: number; changePercent: number } | null>(null);
+  const [quote, setQuote] = useState<{ price: number } | null>(null);
+  const [stockSince, setStockSince] = useState<{ ok: boolean; percentChange?: number; startYear?: number } | null>(null);
   const [assessment, setAssessment] = useState<{ leadershipScore: number; scoreLabel: string; summary: string; strengths: string[]; watchPoints: string[]; longTermOutlook: string; investorVerdict: string } | null>(null);
   const [assessLoading, setAssessLoading] = useState(false);
   const [inWatchlist, setInWatchlist] = useState(false);
   const [watchlistLoading, setWatchlistLoading] = useState(false);
+  const [claudeProfile, setClaudeProfile] = useState<CeoClaudeProfile | null>(null);
+  const [claudeProfileLoading, setClaudeProfileLoading] = useState(false);
   const tenureYears = new Date().getFullYear() - ceo.tenureStart;
+  const slotSynthetic = isSyntheticMapTicker(ceo.ticker);
+
+  useEffect(() => {
+    const t = ceo.ticker.toUpperCase();
+    if (slotSynthetic) {
+      setClaudeProfile(null);
+      setClaudeProfileLoading(false);
+      return;
+    }
+    const ck = ceoProfileCacheKey(ceo.ticker);
+    const cached = profileCacheRef.current.get(ck);
+    if (cached) {
+      setClaudeProfile(cached);
+      setClaudeProfileLoading(false);
+      const tint = mapClaudeSentimentToTint(cached.sentiment);
+      if (tint) onClaudeGraphSentiment(t, tint);
+      return;
+    }
+    setClaudeProfile(null);
+    setClaudeProfileLoading(true);
+    let cancelled = false;
+    const prompt = `Return ONLY valid JSON, no markdown, no explanation:
+{
+  "tenure_start": "Month Year",
+  "tenure_years": number,
+  "legal_history": "string describing any significant legal issues, or null if none",
+  "legal_severity": "none" | "minor" | "significant",
+  "sentiment": "Bullish" | "Bearish" | "Neutral",
+  "sentiment_reason": "one sentence max",
+  "stock_since_tenure_percent_approx": number | null,
+  "stock_since_tenure_summary": "one concise sentence: approximate total shareholder return (price appreciation + dividends) from roughly the start of this CEO's tenure to now for the given exchange-listed ticker, or null/empty if you cannot estimate"
+}
+
+CEO: ${ceo.name}
+Company: ${ceo.company}
+Ticker: ${ceo.ticker}`;
+
+    void (async () => {
+      try {
+        const res = await fetch("/api/ai/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: [{ role: "user", content: prompt }] }),
+        });
+        const data = (await res.json()) as { content?: string };
+        if (!res.ok || cancelled) return;
+        const parsed = data.content ? parseCeoClaudeProfile(data.content) : null;
+        if (cancelled || !parsed) return;
+        profileCacheRef.current.set(ck, parsed);
+        setClaudeProfile(parsed);
+        const tint = mapClaudeSentimentToTint(parsed.sentiment);
+        if (tint) onClaudeGraphSentiment(t, tint);
+      } catch {
+        // keep fallbacks in UI
+      } finally {
+        if (!cancelled) setClaudeProfileLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ceo.ticker, ceo.name, ceo.company, slotSynthetic, profileCacheRef, onClaudeGraphSentiment]);
 
   useEffect(() => {
     fetch(`/api/ceo-news?name=${encodeURIComponent(ceo.name)}&company=${encodeURIComponent(ceo.company)}`)
       .then((r) => r.json())
-      .then((d) => setNews(d?.articles ?? []))
-      .catch(() => setNews([]));
+      .then((d) => {
+        setNews(d?.articles ?? []);
+        setNewsOverallSentiment(d?.overallSentiment ?? null);
+      })
+      .catch(() => {
+        setNews([]);
+        setNewsOverallSentiment(null);
+      });
   }, [ceo.id, ceo.name, ceo.company]);
+
+  useEffect(() => {
+    if (slotSynthetic) {
+      setStockSince(null);
+      return;
+    }
+    setStockSince(null);
+    fetch(`/api/ceo-stock-performance?ticker=${encodeURIComponent(ceo.ticker)}&tenureStartYear=${encodeURIComponent(String(ceo.tenureStart))}`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d?.ok) setStockSince({ ok: true, percentChange: d.percentChange, startYear: d.startYear });
+        else setStockSince({ ok: false });
+      })
+      .catch(() => setStockSince({ ok: false }));
+  }, [ceo.ticker, ceo.tenureStart, slotSynthetic]);
 
   useEffect(() => {
     fetch(`/api/ceo-legal?name=${encodeURIComponent(ceo.name)}`)
@@ -677,11 +1295,19 @@ function DetailPanel({
   }, [ceo.id, ceo.name]);
 
   useEffect(() => {
+    if (slotSynthetic) {
+      setQuote(null);
+      return;
+    }
     fetch(`/api/ticker-quote?ticker=${encodeURIComponent(ceo.ticker)}`)
       .then((r) => r.json())
-      .then((d) => setQuote(d?.price != null ? { price: d.price, changePercent: d.changePercent ?? 0 } : null))
+      .then((d) => {
+        const p = d?.price;
+        const price = typeof p === "number" && Number.isFinite(p) && p > 0 ? p : null;
+        setQuote(price != null ? { price } : null);
+      })
       .catch(() => setQuote(null));
-  }, [ceo.ticker]);
+  }, [ceo.ticker, slotSynthetic]);
 
   useEffect(() => {
     let mounted = true;
@@ -767,12 +1393,14 @@ function DetailPanel({
     setAssessLoading(false);
   };
 
-  const color = sentimentColor(ceo.sentiment);
+  const shownSentiment = newsOverallSentiment ?? ceo.sentiment;
+  const fallbackSentimentColor = sentimentColor(shownSentiment);
+  const avatarColor = claudeProfile ? claudeSentimentStyles(claudeProfile.sentiment).color : fallbackSentimentColor;
   return (
     <div className="flex h-full w-full flex-col overflow-hidden border-l border-white/10 bg-[#0F1520]/98 shadow-2xl backdrop-blur-sm">
       <div className="flex shrink-0 items-start justify-between border-b border-white/10 p-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full text-lg font-bold text-white" style={{ backgroundColor: color }}>
+          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full text-lg font-bold text-white" style={{ backgroundColor: avatarColor }}>
             {getInitials(ceo.name)}
           </div>
           <div>
@@ -780,26 +1408,130 @@ function DetailPanel({
             <p className="text-sm text-zinc-400">{ceo.company}</p>
             <span className="mt-1 inline-block rounded bg-white/10 px-2 py-0.5 text-xs font-medium text-zinc-300">{ceo.ticker}</span>
             <span className="ml-1 inline-block rounded bg-white/5 px-2 py-0.5 text-[10px] text-zinc-500">{ceo.sector}</span>
+            {ceo.interimNames?.length ? (
+              <span className="ml-1 inline-block rounded bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-200" title="Interim leadership">
+                Interim: {ceo.interimNames[0]}
+              </span>
+            ) : null}
+            {ceo.coCeoNames?.length ? (
+              <span className="ml-1 inline-block rounded bg-violet-500/15 px-2 py-0.5 text-[10px] font-medium text-violet-200" title="Co-CEO leadership">
+                Co-CEOs
+              </span>
+            ) : null}
           </div>
         </div>
         <button type="button" onClick={onClose} className="rounded p-1 text-zinc-500 hover:bg-white/10 hover:text-zinc-300" aria-label="Close">×</button>
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-hide">
-        <p className="text-sm text-zinc-400">CEO since {ceo.tenureStart} · {tenureYears} years</p>
-        <p className="text-xs">
-          Sentiment: <span style={{ color }}>{ceo.sentiment}</span>
-        </p>
+        {claudeProfileLoading && !claudeProfile ? (
+          <PanelFieldSkeleton className="h-4 w-52" />
+        ) : claudeProfile ? (
+          <p className="text-sm text-zinc-400">
+            CEO since {claudeProfile.tenure_start} · {claudeProfile.tenure_years} years
+          </p>
+        ) : (
+          <p className="text-sm text-zinc-400">CEO since {ceo.tenureStart} · {tenureYears} years</p>
+        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-zinc-400">Sentiment:</span>
+          {claudeProfileLoading && !claudeProfile ? (
+            <PanelFieldSkeleton className="h-5 w-28" />
+          ) : claudeProfile ? (
+            <span
+              className="rounded-full px-2 py-0.5 text-[10px] font-medium"
+              style={{
+                backgroundColor: claudeSentimentStyles(claudeProfile.sentiment).bg,
+                color: claudeSentimentStyles(claudeProfile.sentiment).color,
+                border: `1px solid ${claudeSentimentStyles(claudeProfile.sentiment).border}`,
+              }}
+              title={claudeProfile.sentiment_reason || undefined}
+            >
+              {claudeProfile.sentiment}
+            </span>
+          ) : (
+            <span
+              className="rounded-full px-2 py-0.5 text-[10px] font-medium"
+              style={{
+                backgroundColor: fallbackSentimentColor + "22",
+                color: fallbackSentimentColor,
+                border: `1px solid ${fallbackSentimentColor}55`,
+              }}
+            >
+              {shownSentiment === "positive" ? "Positive" : shownSentiment === "negative" ? "Negative" : "Neutral"}
+            </span>
+          )}
+        </div>
         {ceo.recentAlert && alertsCount > 0 && (
           <div className="rounded-lg border border-red-500/50 bg-red-500/10 p-3 text-sm text-red-300">
             <strong>Leadership change detected</strong>
             <p className="mt-1 text-xs text-red-200/80">See recent news for details.</p>
           </div>
         )}
-        {quote != null && (
+        {slotSynthetic ? (
           <div className="rounded-lg border border-white/10 bg-white/5 p-3">
             <p className="text-xs text-zinc-500">Stock</p>
-            <p className="text-lg font-semibold text-zinc-100">${quote.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className={quote.changePercent >= 0 ? "text-emerald-400" : "text-red-400"}>{quote.changePercent >= 0 ? "+" : ""}{quote.changePercent.toFixed(2)}%</span></p>
-            <p className="text-[10px] text-zinc-500">Stock since {ceo.name} took over: approximate data in chart</p>
+            <p className="mt-1 text-xs leading-relaxed text-zinc-400">
+              Placeholder tickers such as <span className="font-mono text-zinc-300">{ceo.ticker}</span> are not listed symbols, so quotes and Finnhub history stay empty. When the index ticker list loads, real symbols replace these slots. This is usually{" "}
+              <span className="text-zinc-300">not</span> a rate limit.
+            </p>
+          </div>
+        ) : (
+          <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+            <p className="text-xs text-zinc-500">Stock</p>
+            {quote != null ? (
+              <p className="text-lg font-semibold text-zinc-100">
+                ${quote.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </p>
+            ) : (
+              <p className="text-sm text-zinc-500">Live price unavailable</p>
+            )}
+            {claudeProfileLoading && !claudeProfile ? (
+              <PanelFieldSkeleton className="mt-2 h-3.5 w-full max-w-[240px]" />
+            ) : claudeProfile?.stock_since_tenure_summary ? (
+              <p className="mt-2 text-xs leading-snug text-zinc-400">
+                <span className="font-medium text-zinc-500">Since tenure (AI est.): </span>
+                {claudeProfile.stock_since_tenure_summary}
+                {typeof claudeProfile.stock_since_tenure_percent_approx === "number" &&
+                Number.isFinite(claudeProfile.stock_since_tenure_percent_approx) ? (
+                  <span
+                    className={
+                      claudeProfile.stock_since_tenure_percent_approx >= 0 ? "text-emerald-400" : "text-red-400"
+                    }
+                  >
+                    {" "}
+                    (
+                    {claudeProfile.stock_since_tenure_percent_approx >= 0 ? "+" : ""}
+                    {claudeProfile.stock_since_tenure_percent_approx.toFixed(1)}%)
+                  </span>
+                ) : null}
+              </p>
+            ) : claudeProfile != null &&
+              claudeProfile.stock_since_tenure_percent_approx != null &&
+              Number.isFinite(claudeProfile.stock_since_tenure_percent_approx) ? (
+              <p className="mt-2 text-xs text-zinc-400">
+                <span className="font-medium text-zinc-500">Since tenure (AI est.): </span>
+                <span
+                  className={
+                    claudeProfile.stock_since_tenure_percent_approx >= 0 ? "text-emerald-400" : "text-red-400"
+                  }
+                >
+                  {claudeProfile.stock_since_tenure_percent_approx >= 0 ? "+" : ""}
+                  {claudeProfile.stock_since_tenure_percent_approx.toFixed(1)}%
+                </span>
+              </p>
+            ) : stockSince?.ok ? (
+              <p className="mt-2 text-xs text-zinc-500">
+                Stock since {ceo.name} took over ({stockSince.startYear}):{" "}
+                <span className={(stockSince.percentChange ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}>
+                  {(stockSince.percentChange ?? 0) >= 0 ? "+" : ""}
+                  {(stockSince.percentChange ?? 0).toFixed(2)}%
+                </span>
+              </p>
+            ) : stockSince?.ok === false ? (
+              <p className="mt-2 text-xs text-zinc-500">Historical performance unavailable from data provider.</p>
+            ) : (
+              <p className="mt-2 text-xs text-zinc-500">Loading performance…</p>
+            )}
           </div>
         )}
         <div>
@@ -818,7 +1550,7 @@ function DetailPanel({
         </div>
         <div>
           <h3 className="mb-2 text-sm font-semibold text-zinc-200">Legal history</h3>
-          {legal.length === 0 ? <p className="text-xs text-emerald-500/90">No significant legal issues found</p> : (
+          {legal.length > 0 ? (
             <ul className="space-y-2">
               {legal.map((l, i) => (
                 <li key={i} className={`rounded border p-2 text-xs ${l.active ? "border-red-500/30 bg-red-500/5 text-red-200" : "border-white/5 bg-white/5 text-zinc-400"}`}>
@@ -828,6 +1560,14 @@ function DetailPanel({
                 </li>
               ))}
             </ul>
+          ) : claudeProfileLoading && !claudeProfile ? (
+            <PanelFieldSkeleton className="h-14 w-full" />
+          ) : claudeProfile ? (
+            <p className={`text-xs ${claudeProfile.legal_severity === "significant" ? "text-red-200/90" : claudeProfile.legal_severity === "minor" ? "text-amber-200/90" : "text-zinc-300"}`}>
+              {claudeProfile.legal_history ?? "No significant legal issues reported."}
+            </p>
+          ) : (
+            <p className="text-xs text-emerald-500/90">No significant legal issues found</p>
           )}
         </div>
         <div>
@@ -880,22 +1620,151 @@ function CompareModal({ ceos, onClose }: { ceos: CEOEntry[]; onClose: () => void
 
 export default function CEOsPage() {
   const pathname = usePathname();
-  const [filters, setFilters] = useState<FilterState>(defaultFilters());
+  const [filters, setFilters] = useState<FilterState>(() => getCeoFilters() ?? defaultFilters());
   const [selected, setSelected] = useState<CEOEntry | null>(null);
   const [compare, setCompare] = useState<CEOEntry[]>([]);
-  const [filterPanelCollapsed, setFilterPanelCollapsed] = useState(false);
+  const [filterPanelCollapsed, setFilterPanelCollapsed] = useState(() => getCeoPanelPrefs().filterPanelCollapsed);
   const [alertsCount, setAlertsCount] = useState(0);
-  const graphRef = useRef<{ zoomToFit: (a?: number, b?: number, c?: (n: unknown) => boolean) => void; zoom: (n: number, ms?: number) => void; centerAt: (x?: number, y?: number, ms?: number) => void } | null>(null);
+  const graphRef = useRef<{
+    zoomToFit: (a?: number, b?: number, c?: (n: unknown) => boolean) => void;
+    zoom: (n: number, ms?: number) => void;
+    centerAt: (x?: number, y?: number, ms?: number) => void;
+    graph2ScreenCoords: (x: number, y: number) => { x: number; y: number };
+  } | null>(null);
   const shiftRef = useRef(false);
   const [highlightSector, setHighlightSector] = useState<string | null>(null);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [chartLocked, setChartLocked] = useState(false);
   const [showLinesInfo, setShowLinesInfo] = useState(false);
-  const [detailPanelWidth, setDetailPanelWidth] = useState(400);
-  const [detailPanelCollapsed, setDetailPanelCollapsed] = useState(false);
+  const [activeQuickPreset, setActiveQuickPreset] = useState<QuickPresetId | null>(null);
+  const [ceoAlerts, setCeoAlerts] = useState<CEOAlertItem[]>([]);
+  const [weeklyCeoAlerts, setWeeklyCeoAlerts] = useState<CEOAlertItem[]>([]);
+  const [spy500Tickers, setSpy500Tickers] = useState<string[] | null>(null);
+  const [qqq100Tickers, setQqq100Tickers] = useState<string[] | null>(null);
+  const [dow30Tickers, setDow30Tickers] = useState<string[] | null>(null);
+  const [detailPanelWidth, setDetailPanelWidth] = useState(() => getCeoPanelPrefs().detailPanelWidth);
+  const [detailPanelCollapsed, setDetailPanelCollapsed] = useState(() => getCeoPanelPrefs().detailPanelCollapsed);
 
-  const filtered = useMemo(() => filterCEOs(CEOS, filters), [filters]);
+  const ceoProfileCacheRef = useRef<Map<string, CeoClaudeProfile>>(new Map());
+  const [graphClaudeByTicker, setGraphClaudeByTicker] = useState<Record<string, "bullish" | "bearish" | "neutral">>({});
+  const handleClaudeGraphSentiment = useCallback((ticker: string, tint: "bullish" | "bearish" | "neutral") => {
+    const key = ticker.toUpperCase();
+    setGraphClaudeByTicker((prev) => ({ ...prev, [key]: tint }));
+  }, []);
+
+  const CEOS_BY_TICKER = useMemo(() => new Map(CEOS.map((c) => [c.ticker.toUpperCase(), c])), []);
+
+  const ceoUniverse = useMemo(() => {
+    const placeholderLastNames = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Miller", "Davis", "Garcia", "Rodriguez", "Lee", "Walker", "Hall", "Allen", "Young", "King", "Wright", "Scott", "Green", "Baker", "Adams", "Nelson", "Carter", "Mitchell", "Perez", "Roberts"];
+    const alertTickers = new Set(
+      ceoAlerts
+        .map((a) => a.matchedTicker?.toUpperCase())
+        .filter((t): t is string => Boolean(t))
+    );
+
+    const makePlaceholder = (ticker: string, preset: QuickPresetId): CEOEntry => {
+      const rnd = seedRandom(`ceo-placeholder:${preset}:${ticker}`);
+      const h = Math.floor(rnd() * 1000);
+      const last = placeholderLastNames[h % placeholderLastNames.length] ?? "Smith";
+      const first = ["Alex", "Jordan", "Taylor", "Morgan", "Casey", "Jamie", "Riley", "Quinn", "Avery", "Robin"][h % 10] ?? "Alex";
+      const tenureStart = 1995 + (h % 30);
+      const capPick = h % 100;
+      const marketCap = capPick > 90 ? 3500 : capPick > 75 ? 900 : capPick > 55 ? 300 : capPick > 25 ? 120 : 60;
+      const sentiment: CEOEntry["sentiment"] = (() => {
+        const m = h % 10;
+        if (m <= 2) return "negative";
+        if (m <= 6) return "neutral";
+        return "positive";
+      })();
+      const company =
+        ticker.startsWith("SPY500_") || ticker.startsWith("SPY500_FILL_")
+          ? "S&P 500 constituent"
+          : ticker.startsWith("QQQ100_FILL_")
+            ? "Nasdaq 100 constituent"
+            : ticker.startsWith("DOW30_FILL_")
+              ? "Dow 30 constituent"
+              : ticker;
+      return {
+        id: `${ticker}-placeholder-${preset}`,
+        name: `${first} ${last}`,
+        company,
+        ticker,
+        sector: "Technology",
+        tenureStart,
+        sentiment,
+        marketCap,
+        recentAlert: alertTickers.has(ticker),
+      };
+    };
+
+    const baseFromCEOs = CEOS.map((c) => ({
+      ...c,
+      recentAlert: alertTickers.has(c.ticker.toUpperCase()),
+    }));
+
+    if (!activeQuickPreset) return baseFromCEOs;
+
+    const presetTickers = (() => {
+      if (activeQuickPreset === "spy500") {
+        const fetched = spy500Tickers && spy500Tickers.length > 0 ? spy500Tickers : null;
+        const arr = (fetched ? [...fetched] : Array.from({ length: 500 }, (_, i) => `SPY500_${i + 1}`)).slice(0, 500);
+        while (arr.length < 500) arr.push(`SPY500_FILL_${arr.length + 1}`);
+        const alerts = Array.from(alertTickers);
+        for (let i = 0; i < alerts.length && i < arr.length; i++) {
+          arr[i] = alerts[i];
+        }
+        return arr;
+      }
+      const baseSet = QUICK_PRESET_TICKERS[activeQuickPreset];
+      const arr = baseSet ? Array.from(baseSet) : [];
+      if (activeQuickPreset === "qqq100") {
+        const fetched = qqq100Tickers && qqq100Tickers.length > 0 ? qqq100Tickers : null;
+        const base = fetched ? [...fetched] : arr;
+        const next = base.slice(0, 100);
+        while (next.length < 100) next.push(`QQQ100_FILL_${next.length + 1}`);
+        // Replace filler tickers with any tickers we have live alerts for.
+        const baseSize = baseSet ? baseSet.size : 0;
+        const alerts = Array.from(alertTickers).filter((t) => !next.includes(t));
+        let replaceIdx = next.length - 1;
+        for (let i = 0; i < alerts.length && replaceIdx >= baseSize; i++) {
+          next[replaceIdx] = alerts[i];
+          replaceIdx--;
+        }
+        return next.slice(0, 100);
+      }
+      if (activeQuickPreset === "dow30") {
+        const fetched = dow30Tickers && dow30Tickers.length > 0 ? dow30Tickers : null;
+        const next = (fetched ? [...fetched] : arr).slice(0, 30);
+        while (next.length < 30) next.push(`DOW30_FILL_${next.length + 1}`);
+        return next;
+      }
+      return arr;
+    })();
+
+    return presetTickers.map((ticker) => {
+      const key = ticker.toUpperCase();
+      const existing = CEOS_BY_TICKER.get(key);
+      if (existing) {
+        return { ...existing, recentAlert: alertTickers.has(key) };
+      }
+      return makePlaceholder(key, activeQuickPreset);
+    });
+  }, [activeQuickPreset, ceoAlerts, CEOS_BY_TICKER, spy500Tickers, qqq100Tickers, dow30Tickers]);
+
+  const filtered = useMemo(() => filterCEOs(ceoUniverse, filters), [ceoUniverse, filters]);
   const graphData = useMemo(() => buildGraphData(filtered), [filtered]);
+
+  const presetShownCount = filtered.length;
+  const activePresetShowLabel = activeQuickPreset ? QUICK_PRESET_SHOW_LABEL[activeQuickPreset] : null;
+  const allViewLabel = `Overall`;
+
+  const ceoOfWeek = useMemo(() => {
+    const ticker = ceoAlerts[0]?.matchedTicker?.toUpperCase();
+    if (!ticker) return null;
+    return ceoUniverse.find((c) => c.ticker.toUpperCase() === ticker) ?? null;
+  }, [ceoAlerts, ceoUniverse]);
+
+  const weeklyAlerts = weeklyCeoAlerts;
 
   const searchMatches = useMemo(() => {
     if (!filters.search.trim()) return [];
@@ -925,30 +1794,63 @@ export default function CEOsPage() {
     const matchIds = new Set(filtered.filter((c) => c.name.toLowerCase().includes(q) || c.company.toLowerCase().includes(q) || c.ticker.toLowerCase().includes(q)).map((c) => c.id));
     return new Set(graphData.nodes.map((n) => n.id).filter((id) => !matchIds.has(id)));
   }, [filters.search, filtered, graphData.nodes]);
-  const ceoOfWeek = useMemo(() => CEOS[Math.abs(Math.floor(Math.sin(Date.now() / 86400000) * CEOS.length)) % CEOS.length], []);
-
   useEffect(() => {
-    fetch("/api/ceo-alerts")
-      .then((r) => r.json())
-      .then((d) => setAlertsCount(d?.count ?? 0))
-      .catch(() => setAlertsCount(0));
+    let mounted = true;
+    const load = async () => {
+      try {
+        const r = await fetch("/api/ceo-alerts", { cache: "no-store" });
+        const d = await r.json();
+        if (!mounted) return;
+        setAlertsCount(d?.count ?? 0);
+        setCeoAlerts(Array.isArray(d?.alerts) ? d.alerts : []);
+        setWeeklyCeoAlerts(Array.isArray(d?.weekly) ? d.weekly : []);
+      } catch {
+        if (!mounted) return;
+        setAlertsCount(0);
+        setCeoAlerts([]);
+        setWeeklyCeoAlerts([]);
+      }
+    };
+    load();
+    const t = setInterval(load, 2 * 60 * 1000);
+    return () => {
+      mounted = false;
+      clearInterval(t);
+    };
   }, []);
 
-  // Restore panel positions/collapsed state when user comes back to the page
   useEffect(() => {
-    if (pathname !== "/ceos") return;
-    const prefs = getCeoPanelPrefs();
-    setDetailPanelWidth(prefs.detailPanelWidth);
-    setDetailPanelCollapsed(prefs.detailPanelCollapsed);
-    setFilterPanelCollapsed(prefs.filterPanelCollapsed);
-  }, [pathname]);
-
-  // Restore left panel filter data when user comes back to the page
-  useEffect(() => {
-    if (pathname !== "/ceos") return;
-    const saved = getCeoFilters();
-    if (saved) setFilters(saved);
-  }, [pathname]);
+    const loadIndexTickers = async () => {
+      if (activeQuickPreset === "spy500" && spy500Tickers == null) {
+        try {
+          const r = await fetch("/api/ceo-alerts?index=spy500", { cache: "no-store" });
+          const d = await r.json();
+          setSpy500Tickers(Array.isArray(d?.tickers) ? d.tickers : []);
+        } catch {
+          setSpy500Tickers([]);
+        }
+      }
+      if (activeQuickPreset === "qqq100" && qqq100Tickers == null) {
+        try {
+          const r = await fetch("/api/ceo-alerts?index=qqq100", { cache: "no-store" });
+          const d = await r.json();
+          setQqq100Tickers(Array.isArray(d?.tickers) ? d.tickers : []);
+        } catch {
+          setQqq100Tickers([]);
+        }
+      }
+      if (activeQuickPreset === "dow30" && dow30Tickers == null) {
+        try {
+          const r = await fetch("/api/ceo-alerts?index=dow30", { cache: "no-store" });
+          const d = await r.json();
+          setDow30Tickers(Array.isArray(d?.tickers) ? d.tickers : []);
+        } catch {
+          setDow30Tickers([]);
+        }
+      }
+    };
+    void loadIndexTickers();
+  }, [activeQuickPreset, spy500Tickers, qqq100Tickers, dow30Tickers]);
 
   const filtersPersistSkippedRef = useRef(false);
   useEffect(() => {
@@ -999,6 +1901,10 @@ export default function CEOsPage() {
   // Right panel stays blank until user clicks a CEO (no auto-select)
 
   const handleNodeClick = useCallback((ceo: CEOEntry) => {
+    // If the filter panel is collapsed, selecting a CEO should reveal it again.
+    setFilterPanelCollapsed(false);
+    // If the right detail panel is collapsed, selecting a CEO should reveal it again.
+    setDetailPanelCollapsed(false);
     if (shiftRef.current) {
       setCompare((prev) => {
         const next = prev.filter((c) => c.id !== ceo.id);
@@ -1054,6 +1960,8 @@ export default function CEOsPage() {
                       onClick={() => {
                         setSelected(c);
                         setCompare([]);
+                        setFilterPanelCollapsed(false);
+                        setDetailPanelCollapsed(false);
                         setFilters((f) => ({ ...f, search: "" }));
                       }}
                     >
@@ -1077,9 +1985,10 @@ export default function CEOsPage() {
             highlightSector={highlightSector}
             hoveredNodeId={hoveredNodeId}
             chartLocked={chartLocked}
+            claudeTintByTicker={graphClaudeByTicker}
             onNodeHover={(n) => setHoveredNodeId(n?.id ?? null)}
             onNodeClick={handleNodeClick}
-            onNodeRightClick={(c) => setSelected(c)}
+            onNodeRightClick={(c) => { setSelected(c); setFilterPanelCollapsed(false); setDetailPanelCollapsed(false); }}
             onCameraChange={handleCameraChange}
             graphRef={graphRef}
           />
@@ -1089,7 +1998,23 @@ export default function CEOsPage() {
           onFiltersChange={setFilters}
           alertsCount={alertsCount}
           ceoOfWeek={ceoOfWeek}
-          onSelectCEO={(c) => { setSelected(c); setCompare([]); }}
+          recentAlerts={ceoAlerts}
+          ceoOfWeekAlertTitle={ceoAlerts[0]?.title ?? null}
+          weeklyAlerts={weeklyAlerts}
+          activeQuickPreset={activeQuickPreset}
+          onQuickPresetChange={(id) => setActiveQuickPreset((cur) => (cur === id ? null : id))}
+          presetShownCount={presetShownCount}
+          allViewLabel={allViewLabel}
+          activePresetShowLabel={activePresetShowLabel}
+          onSelectTicker={(t) => {
+            const ceo = ceoUniverse.find((c) => c.ticker.toUpperCase() === t.toUpperCase());
+            if (ceo) {
+              setSelected(ceo);
+              setCompare([]);
+              setFilterPanelCollapsed(false);
+              setDetailPanelCollapsed(false);
+            }
+          }}
           collapsed={filterPanelCollapsed}
           onToggleCollapse={() => setFilterPanelCollapsed((x) => !x)}
         />
@@ -1167,7 +2092,13 @@ export default function CEOsPage() {
                       </button>
                     </div>
                     <div className="min-h-0 flex-1 overflow-hidden">
-                      <DetailPanel ceo={selected} onClose={() => setSelected(null)} alertsCount={alertsCount} />
+                      <DetailPanel
+                        ceo={selected}
+                        onClose={() => setSelected(null)}
+                        alertsCount={alertsCount}
+                        profileCacheRef={ceoProfileCacheRef}
+                        onClaudeGraphSentiment={handleClaudeGraphSentiment}
+                      />
                     </div>
                   </div>
                 </>
@@ -1176,7 +2107,13 @@ export default function CEOsPage() {
             {/* Mobile: bottom sheet overlay */}
             <div className="fixed inset-0 z-50 flex items-end bg-black/60 md:hidden" onClick={() => setSelected(null)} aria-hidden>
               <div className="max-h-[85vh] w-full overflow-hidden rounded-t-xl bg-[#0F1520] shadow-2xl" onClick={(e) => e.stopPropagation()}>
-                <DetailPanel ceo={selected} onClose={() => setSelected(null)} alertsCount={alertsCount} />
+                <DetailPanel
+                  ceo={selected}
+                  onClose={() => setSelected(null)}
+                  alertsCount={alertsCount}
+                  profileCacheRef={ceoProfileCacheRef}
+                  onClaudeGraphSentiment={handleClaudeGraphSentiment}
+                />
               </div>
             </div>
           </>
@@ -1186,7 +2123,7 @@ export default function CEOsPage() {
           <ul className="space-y-2">
             {filtered.slice(0, 50).map((c) => (
               <li key={c.id}>
-                <button type="button" onClick={() => setSelected(c)} className="w-full rounded-lg border border-white/10 bg-white/5 p-3 text-left">
+                <button type="button" onClick={() => { setSelected(c); setFilterPanelCollapsed(false); setDetailPanelCollapsed(false); }} className="w-full rounded-lg border border-white/10 bg-white/5 p-3 text-left">
                   <p className="font-medium text-zinc-100">{c.name}</p>
                   <p className="text-xs text-zinc-400">{c.company} ({c.ticker}) · {c.sector}</p>
                 </button>

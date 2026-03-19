@@ -53,58 +53,28 @@ async function fetchFinnhubQuote(symbol: string, token: string): Promise<MarketS
   }
 }
 
-async function fetchNewsApiHeadlines(iso: string, apiKey: string): Promise<NewsItem[]> {
-  try {
-    const res = await fetch(
-      `https://newsapi.org/v2/top-headlines?country=${iso}&pageSize=5&apiKey=${apiKey}`,
-      { next: { revalidate: 0 } }
-    );
-    if (!res.ok) return [];
-    const data = await res.json();
-    const articles = data?.articles ?? [];
-    return articles
-      .filter((a: { title?: string }) => a?.title)
-      .map((a: { title: string; source?: { name?: string }; url?: string; publishedAt?: string }) => ({
-        title: a.title,
-        source: a.source?.name ?? "—",
-        url: a.url ?? "#",
-        publishedAt: a.publishedAt ?? "",
-      }));
-  } catch {
-    return [];
-  }
-}
+const NEWSDATA_BASE = "https://newsdata.io/api/1/news";
 
-/** Search NewsAPI "everything" for election/political headlines (used when country is selected). */
-async function fetchNewsApiSearch(
-  query: string,
-  apiKey: string,
-  limit = 5,
-  sources?: string
-): Promise<NewsItem[]> {
+/** Fetch headlines from NewsData.io (q=country or topic). */
+async function fetchNewsDataSearch(query: string, apiKey: string, limit = 5): Promise<NewsItem[]> {
   try {
     const params = new URLSearchParams({
-      q: query,
-      sortBy: "publishedAt",
-      pageSize: String(limit),
+      apikey: apiKey,
+      q: query.slice(0, 200),
       language: "en",
-      apiKey: apiKey,
+      size: String(limit),
     });
-    if (sources?.trim()) params.set("sources", sources.trim());
-    const res = await fetch(
-      `https://newsapi.org/v2/everything?${params.toString()}`,
-      { next: { revalidate: 0 } }
-    );
+    const res = await fetch(`${NEWSDATA_BASE}?${params.toString()}`, { next: { revalidate: 0 }, signal: AbortSignal.timeout(10000) });
     if (!res.ok) return [];
-    const data = await res.json();
-    const articles = data?.articles ?? [];
-    return articles
-      .filter((a: { title?: string }) => a?.title)
-      .map((a: { title: string; source?: { name?: string }; url?: string; publishedAt?: string }) => ({
-        title: a.title,
-        source: a.source?.name ?? "—",
-        url: a.url ?? "#",
-        publishedAt: a.publishedAt ?? "",
+    const data = await res.json() as { status?: string; results?: { title?: string; link?: string; source_name?: string; pubDate?: string }[] };
+    const raw = data?.status === "success" ? (data?.results ?? []) : [];
+    return raw
+      .filter((r) => r?.title && r?.link)
+      .map((r) => ({
+        title: r.title ?? "",
+        source: (r as { source_name?: string }).source_name ?? "—",
+        url: r.link ?? "#",
+        publishedAt: r.pubDate ?? "",
       }));
   } catch {
     return [];
@@ -126,7 +96,7 @@ export async function GET(request: NextRequest) {
   const iso3 = countryToIso3(country);
   const indexSymbol = countryToIndexSymbol(country);
   const finnhubKey = process.env.FINNHUB_API_KEY ?? "";
-  const newsKey = process.env.NEWS_API_KEY ?? "";
+  const newsKey = process.env.NEWSDATA_API_KEY ?? "";
 
   let market: MarketSnapshot = null;
   if (finnhubKey && indexSymbol) {
@@ -134,16 +104,10 @@ export async function GET(request: NextRequest) {
   }
 
   let news: NewsItem[] = [];
-  if (newsKey) {
-    if (iso) {
-      news = await fetchNewsApiHeadlines(iso, newsKey);
-    }
-    if (news.length === 0 && country.trim()) {
-      let searchRes = await fetchNewsApiSearch(country.trim(), newsKey, 5);
-      if (searchRes.length === 0) {
-        searchRes = await fetchNewsApiSearch(`${country.trim()} news`, newsKey, 5);
-      }
-      news = searchRes;
+  if (newsKey && country.trim()) {
+    news = await fetchNewsDataSearch(country.trim(), newsKey, 5);
+    if (news.length === 0) {
+      news = await fetchNewsDataSearch(`${country.trim()} news`, newsKey, 5);
     }
   }
 

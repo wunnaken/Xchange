@@ -4,28 +4,43 @@ import { countryToIsoLoose } from "../../../lib/country-mapping";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-type NewsArticle = { title: string; source: string; url: string; publishedAt: string };
+type NewsArticle = { title: string; source: string; url: string; publishedAt: string; image_url?: string | null };
 
-async function fetchNewsSearch(query: string, apiKey: string, limit: number): Promise<NewsArticle[]> {
+const CACHE_MS = 6 * 60 * 60 * 1000;
+const cache = new Map<string, { data: NewsArticle[]; fetchedAt: number }>();
+
+const NEWSDATA_BASE = "https://newsdata.io/api/1/news";
+
+async function fetchNewsSearch(
+  query: string,
+  apiKey: string,
+  limit: number
+): Promise<NewsArticle[]> {
   try {
     const params = new URLSearchParams({
-      q: query,
-      sortBy: "publishedAt",
-      pageSize: String(limit),
+      apikey: apiKey,
+      q: query.slice(0, 200),
       language: "en",
-      apiKey,
+      size: String(limit),
     });
-    const res = await fetch(`https://newsapi.org/v2/everything?${params.toString()}`, { next: { revalidate: 0 } });
+    const res = await fetch(`${NEWSDATA_BASE}?${params.toString()}`, {
+      next: { revalidate: 0 },
+      signal: AbortSignal.timeout(12000),
+    });
     if (!res.ok) return [];
-    const data = (await res.json()) as { articles?: Array<{ title?: string; source?: { name?: string }; url?: string; publishedAt?: string }> };
-    const raw = data?.articles ?? [];
+    const data = (await res.json()) as {
+      status?: string;
+      results?: { title?: string; link?: string; source_name?: string; pubDate?: string; image_url?: string }[];
+    };
+    const raw = data?.status === "success" ? (data?.results ?? []) : [];
     return raw
-      .filter((a) => a?.title)
-      .map((a) => ({
-        title: a.title ?? "",
-        source: a.source?.name ?? "—",
-        url: a.url ?? "#",
-        publishedAt: a.publishedAt ?? "",
+      .filter((r) => r?.title && r?.link)
+      .map((r) => ({
+        title: r.title ?? "",
+        source: (r as { source_name?: string }).source_name ?? "—",
+        url: r.link ?? "#",
+        publishedAt: r.pubDate ?? "",
+        image_url: (r.image_url ?? "").trim() || null,
       }))
       .slice(0, limit);
   } catch {
@@ -38,34 +53,21 @@ export async function GET(request: NextRequest) {
   if (!country) {
     return NextResponse.json({ error: "Missing country" }, { status: 400 });
   }
-  const iso = countryToIsoLoose(country);
-  const apiKey = process.env.NEWS_API_KEY?.trim();
+  const apiKey = process.env.NEWSDATA_API_KEY?.trim();
   if (!apiKey) {
     return NextResponse.json({ articles: [] as NewsArticle[] });
   }
+
+  const cacheKey = country.toLowerCase();
+  const cached = cache.get(cacheKey);
+  if (cached && Date.now() - cached.fetchedAt < CACHE_MS) {
+    return NextResponse.json({ articles: cached.data });
+  }
+
   let articles: NewsArticle[] = [];
+  const iso = countryToIsoLoose(country);
   if (iso) {
-    try {
-      const res = await fetch(
-        `https://newsapi.org/v2/top-headlines?country=${iso}&pageSize=5&apiKey=${apiKey}`,
-        { next: { revalidate: 0 } }
-      );
-      if (res.ok) {
-        const data = (await res.json()) as { articles?: Array<{ title?: string; source?: { name?: string }; url?: string; publishedAt?: string }> };
-        const raw = data?.articles ?? [];
-        articles = raw
-          .filter((a) => a?.title)
-          .map((a) => ({
-            title: a.title ?? "",
-            source: a.source?.name ?? "—",
-            url: a.url ?? "#",
-            publishedAt: a.publishedAt ?? "",
-          }))
-          .slice(0, 4);
-      }
-    } catch {
-      // fall through to search
-    }
+    articles = await fetchNewsSearch(`${country} OR ${iso}`, apiKey, 5);
   }
   if (articles.length === 0) {
     articles = await fetchNewsSearch(country, apiKey, 4);
@@ -73,5 +75,7 @@ export async function GET(request: NextRequest) {
   if (articles.length === 0 && country) {
     articles = await fetchNewsSearch(`${country} news`, apiKey, 4);
   }
+
+  cache.set(cacheKey, { data: articles, fetchedAt: Date.now() });
   return NextResponse.json({ articles });
 }

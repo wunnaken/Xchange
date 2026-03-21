@@ -17,7 +17,10 @@
     "@excalidraw/excalidraw": "^0.18.0",
     "@supabase/ssr": "^0.5.2",
     "@supabase/supabase-js": "^2.99.1",
+    "@types/three": "^0.183.1",
     "canvas-confetti": "^1.9.4",
+    "d3-geo-projection": "^4.0.0",
+    "globe.gl": "^2.45.1",
     "lightweight-charts": "^5.1.0",
     "next": "16.1.6",
     "react": "^19.2.3",
@@ -27,6 +30,7 @@
     "react-simple-maps": "^3.0.0",
     "recharts": "^3.8.0",
     "resend": "^6.9.3",
+    "three": "^0.183.2",
     "topojson-client": "^3.1.0"
   },
   "devDependencies": {

@@ -14,8 +14,8 @@ const MapView = dynamic(() => import("./MapView"), {
 export default function MapPage() {
   return (
     <div className="min-h-screen app-page font-[&quot;Times_New_Roman&quot;,serif]">
-      <div className="mx-auto max-w-7xl px-4 py-6 lg:px-6 lg:py-8">
-        <div className="mb-6">
+      <div className="mx-auto max-w-7xl px-2 py-3 sm:px-4 lg:px-6">
+        <div className="mb-2">
           <p className="text-xs font-medium uppercase tracking-[0.25em] text-[var(--accent-color)]/80">
             Macro Radar
           </p>
@@ -24,8 +24,8 @@ export default function MapPage() {
           </h1>
         </div>
 
-        <p className="mb-4 text-xs text-zinc-400">
-          Hover a country for a quick snapshot in the panel. Click for full data, projections, and elections.
+        <p className="mb-2 text-xs text-zinc-400">
+          Hover a country for a quick snapshot. Click for full data, projections, and elections.
         </p>
 
         <MapView />

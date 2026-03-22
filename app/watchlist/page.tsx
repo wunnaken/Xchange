@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -32,6 +33,8 @@ import {
   fetchTickerBarConfig,
   saveTickerBarConfig,
 } from "../../lib/ticker-bar-api";
+
+const WatchlistChart = dynamic(() => import("./WatchlistChart"), { ssr: false });
 
 const MAX_HEADER_TICKERS = 12;
 
@@ -437,6 +440,7 @@ export default function WatchlistPage() {
           {items.length === 0 ? (
             <p className="mt-6 text-zinc-400">No assets in watchlist yet. Search for a stock or crypto to add.</p>
           ) : (
+            <>
             <ul className="mt-6 space-y-2">
               {items.map((item) => {
                 const q = liveQuotes[item.ticker];
@@ -510,6 +514,8 @@ export default function WatchlistPage() {
                 );
               })}
             </ul>
+            {watchlistTickers.length > 0 && <WatchlistChart tickers={watchlistTickers} />}
+            </>
           )}
         </>
       )}

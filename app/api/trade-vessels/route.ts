@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
-export const revalidate = 300;
+export const revalidate = 900;
 
 const OPENSKY_URL = "https://opensky-network.org/api/states/all";
 const NEWSDATA_URL = "https://newsdata.io/api/1/latest";
-const NEWSDATA_ARCHIVE_URL = "https://newsdata.io/api/1/archive";
+const BBC_WORLD_RSS_URL = "http://feeds.bbci.co.uk/news/world/rss.xml";
+const MARKETWATCH_RSS_URL = "https://feeds.marketwatch.com/marketwatch/topstories";
 const WORLD_BANK_PORT_URL =
   "https://api.worldbank.org/v2/country/all/indicator/IS.SHP.GOOD.TU?format=json&mrv=1&per_page=300";
 const WORLD_BANK_TRADE_GDP_URL =
@@ -96,9 +97,11 @@ function toNumber(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/** Parse NewsData.io and other date strings (NewsData uses `YYYY-MM-DD HH:mm:ss`). */
 function parseDate(value?: string): number {
   if (!value) return 0;
-  const t = new Date(value).getTime();
+  const normalized = /\d{4}-\d{2}-\d{2} \d/.test(value) ? value.replace(" ", "T") : value;
+  const t = new Date(normalized).getTime();
   return Number.isFinite(t) ? t : 0;
 }
 
@@ -128,7 +131,8 @@ function countryRowMatches(rowCountry: string | undefined, target: string): bool
   return false;
 }
 
-async function fetchNewsData(apiKey: string, q: string, size: number, timeframe?: number): Promise<NewsResult[]> {
+async function fetchNewsData(apiKey: string, q: string, size: number, logLabel?: string): Promise<NewsResult[]> {
+  const label = logLabel ?? "combined";
   try {
     const params = new URLSearchParams({
       apikey: apiKey,
@@ -136,57 +140,41 @@ async function fetchNewsData(apiKey: string, q: string, size: number, timeframe?
       language: "en",
       size: String(size),
     });
-    /* NewsData /latest only allows timeframe 1–48 (hours) or minutes up to 2880m. */
-    if (timeframe != null) params.set("timeframe", String(timeframe));
     const res = await fetch(`${NEWSDATA_URL}?${params.toString()}`, {
-      next: { revalidate: 300 },
+      next: { revalidate: 900 },
       signal: AbortSignal.timeout(15000),
     });
+    const data = (await res.json()) as { status?: string; results?: NewsResult[]; message?: string };
+    const results = data.status === "success" && Array.isArray(data.results) ? data.results : [];
+    const first = results[0];
+    console.log(`[trade-vessels] NewsData /latest — ${label}`, {
+      httpStatus: res.status,
+      ok: res.ok,
+      apiStatus: data.status,
+      message: data.message,
+      resultCount: results.length,
+      firstTitle: first?.title,
+      firstPubDate: first?.pubDate,
+    });
     if (!res.ok) return [];
-    const data = (await res.json()) as { status?: string; results?: NewsResult[] };
-    return data.status === "success" && Array.isArray(data.results) ? data.results : [];
-  } catch {
+    return results;
+  } catch (e) {
+    console.log(`[trade-vessels] NewsData /latest error — ${label}`, e);
     return [];
   }
 }
 
-function utcYmd(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
+const SHIPPING_NEWS_QUERY = "shipping trade route cargo major shipping lane";
 
-/** Wider windows (7d / 30d) use /archive because /latest max lookback is 48h. */
-async function fetchNewsArchive(apiKey: string, q: string, size: number, fromDate: string, toDate: string): Promise<NewsResult[]> {
-  try {
-    const params = new URLSearchParams({
-      apikey: apiKey,
-      q,
-      language: "en",
-      size: String(size),
-      from_date: fromDate,
-      to_date: toDate,
-    });
-    const res = await fetch(`${NEWSDATA_ARCHIVE_URL}?${params.toString()}`, {
-      next: { revalidate: 300 },
-      signal: AbortSignal.timeout(20000),
-    });
-    if (!res.ok) return [];
-    const data = (await res.json()) as { status?: string; results?: NewsResult[] };
-    return data.status === "success" && Array.isArray(data.results) ? data.results : [];
-  } catch {
-    return [];
-  }
-}
-
-/** NewsData.io `q` strings per chokepoint (aligned with CHOKEPOINTS[].name). */
-const CHOKEPOINT_NEWS_Q: Record<string, string> = {
-  "Red Sea": "red sea houthi shipping",
-  "Black Sea": "black sea ukraine russia shipping",
-  "Taiwan Strait": "taiwan strait china military",
-  "Strait of Hormuz": "hormuz iran oil tanker",
-  "Panama Canal": "panama canal drought transit",
-  "Strait of Malacca": "malacca strait shipping piracy",
-  "Suez Canal": "suez canal shipping disruption",
-  Bosphorus: "bosphorus turkey shipping",
+const CHOKEPOINT_KEYWORDS: Record<string, string[]> = {
+  "Red Sea": ["red sea", "houthi"],
+  "Black Sea": ["black sea", "ukraine", "russia"],
+  "Strait of Hormuz": ["hormuz", "iran", "tanker"],
+  "Taiwan Strait": ["taiwan", "taiwan strait"],
+  "Panama Canal": ["panama canal", "panama"],
+  "Strait of Malacca": ["malacca", "strait of malacca"],
+  "Suez Canal": ["suez"],
+  Bosphorus: ["bosphorus", "turkey strait", "turkish strait", "turkish straits"],
 };
 
 type RiskZonePayload = {
@@ -200,72 +188,111 @@ type RiskZonePayload = {
   recentArticles: Array<{ title: string; url: string; source: string }>;
 };
 
-async function fetchChokepointZone(c: (typeof CHOKEPOINTS)[number], newsKey: string): Promise<RiskZonePayload> {
-  const empty: RiskZonePayload = {
-    name: c.name,
-    pos: c.pos,
-    risk: "low",
-    summary: "No recent disruption reports",
-    affected: c.affected,
-    articleCount: 0,
-    recentArticles: [],
-  };
+function buildRiskZones(news: NewsResult[]): RiskZonePayload[] {
+  return CHOKEPOINTS.map((c) => {
+    const keywords = CHOKEPOINT_KEYWORDS[c.name] ?? [c.search.toLowerCase()];
+    const matched = news
+      .filter((n) => {
+        const text = `${n.title ?? ""} ${n.description ?? ""}`.toLowerCase();
+        return keywords.some((k) => text.includes(k));
+      })
+      .sort((a, b) => parseDate(b.pubDate) - parseDate(a.pubDate));
 
-  if (!newsKey) return empty;
+    const top = matched[0];
+    const blob = `${top?.title ?? ""} ${top?.description ?? ""}`.trim().replace(/\s+/g, " ");
+    const summary = blob.length > 200 ? `${blob.slice(0, 197)}...` : blob;
+    const matchCount = matched.length;
+    const risk: RiskLevel = matchCount >= 3 ? "high" : matchCount >= 1 ? "medium" : "low";
+    const recentArticles = matched
+      .slice(0, 3)
+      .map((n) => ({
+        title: (n.title ?? "Untitled").trim(),
+        url: (n.link ?? "").trim(),
+        source: n.source_name ?? n.source_id ?? "Unknown",
+      }))
+      .filter((a) => a.url.startsWith("http"));
 
-  const q = CHOKEPOINT_NEWS_Q[c.name];
-  if (!q) return empty;
+    return {
+      name: c.name,
+      pos: c.pos,
+      risk,
+      summary: matchCount > 0 ? summary || `${c.name}: shipping watch` : "No recent disruption reports",
+      affected: c.affected,
+      lastUpdated: top?.pubDate,
+      articleCount: matchCount,
+      recentArticles,
+    };
+  });
+}
 
-  let articles: NewsResult[] = [];
-  let windowUsed: "48h" | "7d" | "30d" | null = null;
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
 
-  articles = await fetchNewsData(newsKey, q, 5, 48);
-  if (articles.length > 0) windowUsed = "48h";
-  else {
-    const to = utcYmd(new Date());
-    const from7 = utcYmd(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
-    articles = await fetchNewsArchive(newsKey, q, 5, from7, to);
-    if (articles.length > 0) windowUsed = "7d";
-    else {
-      const from30 = utcYmd(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
-      articles = await fetchNewsArchive(newsKey, q, 5, from30, to);
-      if (articles.length > 0) windowUsed = "30d";
-    }
+function stripXmlTags(value: string): string {
+  return value.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function extractTagValue(itemXml: string, tag: "title" | "description" | "pubDate" | "link"): string {
+  const cdataRe = new RegExp(`<${tag}><!\\[CDATA\\[(.*?)\\]\\]><\\/${tag}>`, "is");
+  const plainRe = new RegExp(`<${tag}>(.*?)<\\/${tag}>`, "is");
+  const hit = itemXml.match(cdataRe)?.[1] ?? itemXml.match(plainRe)?.[1] ?? "";
+  return decodeXmlEntities(stripXmlTags(hit));
+}
+
+function parseRssItems(xml: string, sourceName: string): NewsResult[] {
+  const items = xml.match(/<item\b[\s\S]*?<\/item>/gi) ?? [];
+  return items
+    .map((itemXml) => {
+      const title = extractTagValue(itemXml, "title");
+      const description = extractTagValue(itemXml, "description");
+      const pubDate = extractTagValue(itemXml, "pubDate");
+      const link = extractTagValue(itemXml, "link");
+      return {
+        title,
+        description,
+        pubDate,
+        link,
+        source_name: sourceName,
+      } satisfies NewsResult;
+    })
+    .filter((a) => a.title || a.description);
+}
+
+async function fetchRssFeed(url: string, sourceName: string): Promise<NewsResult[]> {
+  try {
+    const res = await fetch(url, {
+      next: { revalidate: 900 },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return [];
+    const xml = await res.text();
+    const items = parseRssItems(xml, sourceName);
+    console.log(`[trade-vessels] RSS ${sourceName}`, { httpStatus: res.status, count: items.length });
+    return items;
+  } catch (e) {
+    console.log(`[trade-vessels] RSS ${sourceName} error`, e);
+    return [];
   }
+}
 
-  if (articles.length === 0) return empty;
-
-  const sorted = [...articles].sort((a, b) => parseDate(b.pubDate) - parseDate(a.pubDate));
-  const latest = sorted[0]!;
-  const blob = `${latest.title ?? ""} ${latest.description ?? ""}`.trim().replace(/\s+/g, " ");
-  const summary = blob.length > 200 ? `${blob.slice(0, 197)}...` : blob;
-  const risk: RiskLevel = windowUsed === "48h" ? "high" : windowUsed === "7d" ? "medium" : "low";
-
-  const recentArticles = sorted
-    .slice(0, 3)
-    .map((n) => ({
-      title: (n.title ?? "Untitled").trim(),
-      url: (n.link ?? "").trim(),
-      source: n.source_name ?? n.source_id ?? "Unknown",
-    }))
-    .filter((a) => a.url.startsWith("http"));
-
-  return {
-    name: c.name,
-    pos: c.pos,
-    risk,
-    summary: summary || `${c.name}: shipping watch`,
-    affected: c.affected,
-    lastUpdated: latest.pubDate,
-    articleCount: articles.length,
-    recentArticles,
-  };
+async function fetchChokepointRssArticles(): Promise<NewsResult[]> {
+  const [bbc, marketWatch] = await Promise.all([
+    fetchRssFeed(BBC_WORLD_RSS_URL, "BBC"),
+    fetchRssFeed(MARKETWATCH_RSS_URL, "MarketWatch"),
+  ]);
+  return [...bbc, ...marketWatch];
 }
 
 async function fetchOpenSkyFlights() {
   try {
     const res = await fetch(OPENSKY_URL, {
-      next: { revalidate: 300 },
+      next: { revalidate: 900 },
       signal: AbortSignal.timeout(15000),
     });
     if (!res.ok)
@@ -283,6 +310,7 @@ async function fetchOpenSkyFlights() {
       .filter((s) => {
         const callsign = (s[1] ?? "").toString().trim();
         const onGround = Boolean(s[8]);
+        /* OpenSky state vector: [9] = velocity (m/s), [10] = true_track (deg from north). */
         const velocity = toNumber(s[9]) ?? 0;
         return callsign.length > 0 && !onGround && velocity > 150;
       })
@@ -304,7 +332,7 @@ async function fetchOpenSkyFlights() {
 async function fetchWorldBankRows(url: string): Promise<WorldBankRow[]> {
   try {
     const res = await fetch(url, {
-      next: { revalidate: 300 },
+      next: { revalidate: 900 },
       signal: AbortSignal.timeout(20000),
     });
     if (!res.ok) return [];
@@ -427,14 +455,32 @@ function buildWeeklyChanges(news: NewsResult[]) {
   });
 }
 
+function resolveNewsDataApiKey(): string {
+  const candidates = [
+    process.env.NEWSDATA_API_KEY,
+    process.env.NEWS_DATA_API_KEY,
+    process.env.NEXT_PUBLIC_NEWSDATA_KEY,
+    process.env.NEWSDATA_KEY,
+    process.env.NEWS_API_KEY,
+  ];
+  for (const v of candidates) {
+    const t = v?.trim();
+    if (t) return t;
+  }
+  console.log(
+    "[trade-vessels] No NewsData API key found. Tried: NEWSDATA_API_KEY, NEWS_DATA_API_KEY, NEXT_PUBLIC_NEWSDATA_KEY, NEWSDATA_KEY, NEWS_API_KEY",
+  );
+  return "";
+}
+
 export async function GET() {
-  const newsKey = process.env.NEWSDATA_API_KEY?.trim() ?? "";
+  const newsKey = resolveNewsDataApiKey();
 
   let flights: Awaited<ReturnType<typeof fetchOpenSkyFlights>> = [];
   let throughputRows: WorldBankRow[] = [];
   let tradeRows: WorldBankRow[] = [];
   let shippingNewsRaw: NewsResult[] = [];
-  let conflictNewsRaw: NewsResult[] = [];
+  let chokepointNewsRaw: NewsResult[] = [];
 
   try {
     flights = await fetchOpenSkyFlights();
@@ -453,19 +499,15 @@ export async function GET() {
   }
   if (newsKey) {
     try {
-      shippingNewsRaw = await fetchNewsData(newsKey, "shipping trade route cargo major shipping lane", 20);
+      shippingNewsRaw = await fetchNewsData(newsKey, SHIPPING_NEWS_QUERY, 10, "shipping panel query");
     } catch {
       shippingNewsRaw = [];
     }
-    try {
-      conflictNewsRaw = await fetchNewsData(
-        newsKey,
-        "shipping OR tanker OR vessel OR cargo disruption conflict sanctions blockade strait",
-        40,
-      );
-    } catch {
-      conflictNewsRaw = [];
-    }
+  }
+  try {
+    chokepointNewsRaw = await fetchChokepointRssArticles();
+  } catch {
+    chokepointNewsRaw = [];
   }
 
   const shippingNews = shippingNewsRaw
@@ -481,8 +523,8 @@ export async function GET() {
   const airRoutes = buildAirRouteCorridors(flights);
   const ports = buildPortsLive(throughputRows);
   const landRoutes = buildLandRoutes(tradeRows);
-  const riskZones = await Promise.all(CHOKEPOINTS.map((c) => fetchChokepointZone(c, newsKey)));
-  const weeklyChanges = buildWeeklyChanges(conflictNewsRaw.length ? conflictNewsRaw : shippingNewsRaw);
+  const riskZones = buildRiskZones(chokepointNewsRaw);
+  const weeklyChanges = buildWeeklyChanges(chokepointNewsRaw);
 
   return NextResponse.json({
     flights,

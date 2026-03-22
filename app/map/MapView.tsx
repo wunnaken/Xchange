@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import * as THREE from "three";
 import type { Feature, FeatureCollection, Geometry } from "geojson";
 import type { GlobeInstance } from "globe.gl";
 import { feature } from "topojson-client";
@@ -28,6 +29,9 @@ const GLOBE_TEXTURES = {
   globeImageUrl: "//unpkg.com/three-globe/example/img/earth-blue-marble.jpg",
   bumpImageUrl: "//unpkg.com/three-globe/example/img/earth-topology.png",
 } as const;
+
+/** Refetch interval for market map layer API; colors repaint without resetting all polygons (reduces flicker). */
+const MARKET_MAP_REFRESH_MS = 2 * 60 * 1000;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type CountryInfo = { name: string; id: string };
@@ -183,7 +187,7 @@ function hexWithAlpha(hex: string, alpha01: number): string {
 
 // ─── Main MapView ─────────────────────────────────────────────────────────────
 export default function MapView() {
-  const [mapMode, setMapMode] = useState<MapMode>("trade");
+  const [mapMode, setMapMode] = useState<MapMode>("market");
 
   const [geography, setGeography] = useState<FeatureCollection | null>(null);
   const [selected, setSelected] = useState<CountryInfo | null>(null);
@@ -231,10 +235,15 @@ export default function MapView() {
   const [tradeWeekly, setTradeWeekly] = useState<TradeWeeklyApi | null>(null);
   const [tradeDataLoading, setTradeDataLoading] = useState(false);
   const [lastTradeUpdate, setLastTradeUpdate] = useState<string | null>(null);
-  const [marketRefreshLoading, setMarketRefreshLoading] = useState(false);
+  const [globeReadyTick, setGlobeReadyTick] = useState(0);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const globeRef = useRef<GlobeInstance | null>(null);
+  const flightSpriteMaterialRef = useRef<THREE.SpriteMaterial | null>(null);
+  const tradeLayersRef = useRef(tradeLayers);
+  tradeLayersRef.current = tradeLayers;
+  const flightPositionsRef = useRef(flightPositions);
+  flightPositionsRef.current = flightPositions;
   const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const mapModeRef = useRef(mapMode);
@@ -271,7 +280,7 @@ export default function MapView() {
     return arcs;
   }, [tradeLayers.sea, tradeLayers.land, seaRoutes, landRoutes]);
 
-  const tradeFlightHtmlData = useMemo(
+  const tradeFlightLayerData = useMemo(
     () => (tradeLayers.flights ? flightPositions : []),
     [tradeLayers.flights, flightPositions],
   );
@@ -459,27 +468,20 @@ export default function MapView() {
 
   useEffect(() => {
     const refreshCurrentLayer = async () => {
-      setMarketRefreshLoading(true);
       try {
         const data = (await fetch(`/api/map-layer-data?layer=${activeLayerId}&history=1`, {
           cache: "no-store",
         }).then((r) => r.json())) as LayerDataState;
         setLayerData({ byIso3: data.byIso3 ?? {}, byName: data.byName ?? {} });
         setLayerHistory(data.history ?? {});
-        const g = globeRef.current;
-        if (g && mapModeRef.current === "market") {
-          g.polygonCapColor((d: object) => hexWithAlpha(getColorForCountry((d as CountryPoly).name), 0.5));
-        }
       } catch {
         // ignore background refresh failures
-      } finally {
-        setMarketRefreshLoading(false);
       }
     };
 
-    const id = setInterval(refreshCurrentLayer, 300000);
+    const id = setInterval(refreshCurrentLayer, MARKET_MAP_REFRESH_MS);
     return () => clearInterval(id);
-  }, [activeLayerId, getColorForCountry]);
+  }, [activeLayerId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -524,7 +526,7 @@ export default function MapView() {
     };
 
     void fetchTradeLiveData();
-    const id = setInterval(fetchTradeLiveData, 300000);
+    const id = setInterval(fetchTradeLiveData, 900000);
     return () => {
       cancelled = true;
       clearInterval(id);
@@ -650,7 +652,7 @@ export default function MapView() {
     g.arcsTransitionDuration(0).pointsTransitionDuration(0);
     const gRings = g as GlobeInstance & { ringsTransitionDuration?: (n: number) => GlobeInstance };
     gRings.ringsTransitionDuration?.(0);
-    g.arcsData([]).pointsData([]).ringsData([]).htmlElementsData([]);
+    g.arcsData([]).pointsData([]).ringsData([]).htmlElementsData([]).customLayerData([]);
   }, []);
 
   const switchToMarketMap = useCallback(() => {
@@ -675,7 +677,7 @@ export default function MapView() {
 
       const globe = new GlobeLib(containerRef.current)
         .backgroundColor("rgba(0,0,0,0)")
-        .polygonsTransitionDuration(300)
+        .polygonsTransitionDuration(0)
         .polygonGeoJsonGeometry("geometry")
         .polygonLabel("")
         .arcsTransitionDuration(0)
@@ -743,6 +745,40 @@ export default function MapView() {
       }
 
       globeRef.current = globe;
+      setGlobeReadyTick((n) => n + 1);
+
+      if (!flightSpriteMaterialRef.current) {
+        const canvas = document.createElement("canvas");
+        canvas.width = 64;
+        canvas.height = 64;
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.font = "48px serif";
+          ctx.fillStyle = "#22c55e";
+          ctx.fillText("✈", 8, 48);
+        }
+        const texture = new THREE.CanvasTexture(canvas);
+        flightSpriteMaterialRef.current = new THREE.SpriteMaterial({
+          map: texture,
+          depthWrite: false,
+          transparent: true,
+        });
+      }
+
+      globe.onGlobeClick((coords) => {
+        if (mapModeRef.current !== "trade" || !tradeLayersRef.current.flights) return;
+        const { lat, lng } = coords;
+        let best: TradeFlightPosition | null = null;
+        let bestDist = Infinity;
+        for (const f of flightPositionsRef.current) {
+          const d = Math.hypot(f.lat - lat, f.lon - lng);
+          if (d < bestDist) {
+            bestDist = d;
+            best = f;
+          }
+        }
+        if (best && bestDist <= 2) selectFlightFromGlobeRef.current(best);
+      });
 
       const applyResize = () => {
         if (!globe || !containerRef.current) return;
@@ -789,8 +825,9 @@ export default function MapView() {
     if (mapMode === "market") {
       g.enablePointerInteraction(true);
       g.arcAltitudeAutoScale(0.35);
+      const gPoly = g as GlobeInstance & { polygonsTransitionDuration?: (n: number) => GlobeInstance };
+      gPoly.polygonsTransitionDuration?.(0);
       g.polygonsData(countryPolys)
-        .polygonCapColor((d: object) => hexWithAlpha(getColorForCountry((d as CountryPoly).name), 0.5))
         .polygonSideColor(() => "rgba(0,0,0,0.15)")
         .polygonStrokeColor((d: object) => {
           const p = d as CountryPoly;
@@ -799,9 +836,10 @@ export default function MapView() {
         .polygonAltitude((d: object) => (compareIds.has((d as CountryPoly).id) ? 0.06 : 0.01))
         .polygonLabel((d: object) => (d as CountryPoly).name);
 
-      g.arcsData([]).pointsData([]).ringsData([]).htmlElementsData([]);
+      g.arcsData([]).pointsData([]).ringsData([]).htmlElementsData([]).customLayerData([]);
       g.onArcClick(() => {});
       g.onPointClick(() => {});
+      g.onCustomLayerClick(() => {});
     } else {
       g.enablePointerInteraction(true);
       g.polygonsData(countryPolys)
@@ -869,24 +907,27 @@ export default function MapView() {
           setSelectedPort({ name: p.name, pos: p.pos, volume: p.volume ?? "—" });
         });
 
-      g.htmlElementsData(tradeFlightHtmlData)
-        .htmlLat((d: object) => (d as TradeFlightPosition).lat)
-        .htmlLng((d: object) => (d as TradeFlightPosition).lon)
-        .htmlAltitude(0.01)
-        .htmlElement((d: object) => {
-          const flight = d as TradeFlightPosition;
-          const el = document.createElement("div");
-          el.innerHTML = "✈";
-          el.style.cssText =
-            "font-size:14px; color:#22c55e; cursor:pointer; transform:rotate(" +
-            (flight.heading || 0) +
-            "deg); transition: transform 0.3s; filter: drop-shadow(0 0 4px #22c55e);";
-          el.addEventListener("click", (e) => {
-            e.stopPropagation();
-            selectFlightFromGlobeRef.current(flight);
+      const mat = flightSpriteMaterialRef.current;
+      if (tradeFlightLayerData.length > 0 && mat) {
+        g.customLayerData(tradeFlightLayerData)
+          .customThreeObject(() => {
+            const sprite = new THREE.Sprite(mat);
+            sprite.scale.set(0.8, 0.8, 1);
+            return sprite;
+          })
+          .customThreeObjectUpdate((obj, d) => {
+            const f = d as TradeFlightPosition;
+            Object.assign(obj.position, g.getCoords(f.lat, f.lon, 0.01));
+            const h = f.heading;
+            obj.rotation.z = h != null && Number.isFinite(h) ? -THREE.MathUtils.degToRad(h) : 0;
           });
-          return el;
+        g.onCustomLayerClick((flight: object) => {
+          selectFlightFromGlobeRef.current(flight as TradeFlightPosition);
         });
+      } else {
+        g.customLayerData([]);
+        g.onCustomLayerClick(() => {});
+      }
 
       g.onArcClick((arc: object) => {
         const a = arc as {
@@ -937,13 +978,22 @@ export default function MapView() {
   }, [
     mapMode,
     countryPolys,
-    getColorForCountry,
     compareCountries,
     tradeArcsCombined,
     tradePointsData,
-    tradeFlightHtmlData,
+    tradeFlightLayerData,
     tradeRingsData,
+    globeReadyTick,
   ]);
+
+  /** Repaint fills when layer data changes — only updates cap color (no polygonsData reset) to avoid grey flicker. */
+  useEffect(() => {
+    const g = globeRef.current;
+    if (!g || mapMode !== "market" || countryPolys.length === 0) return;
+    const gPoly = g as GlobeInstance & { polygonsTransitionDuration?: (n: number) => GlobeInstance };
+    gPoly.polygonsTransitionDuration?.(0);
+    g.polygonCapColor((d: object) => hexWithAlpha(getColorForCountry((d as CountryPoly).name), 0.5));
+  }, [mapMode, countryPolys.length, getColorForCountry]);
 
   useLayoutEffect(() => {
     const g = globeRef.current;
@@ -951,7 +1001,7 @@ export default function MapView() {
     g.arcsTransitionDuration(0).pointsTransitionDuration(0);
     const gRings = g as GlobeInstance & { ringsTransitionDuration?: (n: number) => GlobeInstance };
     gRings.ringsTransitionDuration?.(0);
-    g.arcsData([]).pointsData([]).ringsData([]).htmlElementsData([]);
+    g.arcsData([]).pointsData([]).ringsData([]).htmlElementsData([]).customLayerData([]);
   }, [mapMode]);
 
   useEffect(() => {
@@ -980,6 +1030,20 @@ export default function MapView() {
         <div className="flex gap-2">
           <button
             type="button"
+            onClick={switchToMarketMap}
+            className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition-all ${
+              mapMode === "market"
+                ? "border-[var(--accent-color)]/50 bg-[var(--accent-color)]/10 text-[var(--accent-color)]"
+                : "border-white/10 bg-white/5 text-zinc-400 hover:border-white/20 hover:bg-white/10 hover:text-zinc-200"
+            }`}
+          >
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 12l7-7 4 4 7-7M3 19l7-7 4 4 7-7" />
+            </svg>
+            Market Map
+          </button>
+          <button
+            type="button"
             onClick={() => setMapMode("trade")}
             className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition-all ${
               mapMode === "trade"
@@ -993,25 +1057,10 @@ export default function MapView() {
             </svg>
             International Trade
           </button>
-          <button
-            type="button"
-            onClick={switchToMarketMap}
-            className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition-all ${
-              mapMode === "market"
-                ? "border-[var(--accent-color)]/50 bg-[var(--accent-color)]/10 text-[var(--accent-color)]"
-                : "border-white/10 bg-white/5 text-zinc-400 hover:border-white/20 hover:bg-white/10 hover:text-zinc-200"
-            }`}
-          >
-            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3 12l7-7 4 4 7-7M3 19l7-7 4 4 7-7" />
-            </svg>
-            Market Map
-          </button>
         </div>
-        <div className="ml-auto mr-1 flex items-center gap-1.5 text-[10px] text-zinc-500">
-          <span className={`h-2 w-2 rounded-full ${marketRefreshLoading ? "animate-pulse bg-emerald-400" : "bg-zinc-600"}`} />
-          {marketRefreshLoading ? "Refreshing data..." : "Auto-refresh 5m"}
-        </div>
+        <p className="ml-auto mr-1 max-w-[11rem] text-right text-[10px] leading-snug text-zinc-500">
+          Map data refreshes every 2 minutes (World Bank / layer sources).
+        </p>
 
         {mapMode === "market" && (
           <div className="flex flex-wrap items-center gap-2">

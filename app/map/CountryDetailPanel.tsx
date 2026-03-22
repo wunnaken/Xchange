@@ -344,7 +344,7 @@ export function CountryDetailPanel({
               )}
               {layerHistory && layerHistory.length > 1 && (
                 <div className="mt-3">
-                  <p className="text-[10px] uppercase tracking-wider text-zinc-500">5-year trend</p>
+                  <p className="text-[10px] uppercase tracking-wider text-zinc-500">Historical trend</p>
                   <div className="mt-1 flex h-20 items-end gap-0.5">
                     {layerHistory
                       .slice()

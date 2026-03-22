@@ -27,6 +27,7 @@ const MAIN_NAV: { href: string; label: string; icon?: "radar" }[] = [
   { href: "/messages", label: "Messages" },
   { href: "/news", label: "News" },
   { href: "/map", label: "Maps" },
+  { href: "/bonds", label: "Bonds" },
   { href: "/sentiment", label: "Sentiment Radar" },
   { href: "/growth", label: "Growth" },
   { href: "/ceos", label: "CEOs" },

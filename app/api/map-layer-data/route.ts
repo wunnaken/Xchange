@@ -41,12 +41,12 @@ async function fetchWorldBankIndicator(indicator: string): Promise<Record<string
   }
 }
 
-/** Optional: 5-year history for sparkline. Same endpoint, mrv=5. */
+/** Multi-year history for sparkline (mrv = observations per country; annual indicators → many years). */
 export async function fetchWorldBankHistory(indicator: string): Promise<Record<string, { year: string; value: number }[]>> {
   const key = `wb-history-${indicator}`;
   const hit = wbHistoryCache.get(key);
   if (hit && Date.now() - hit.ts < CACHE_MS) return hit.data;
-  const url = `${WB_BASE}/${indicator}?format=json&per_page=1500&mrv=5`;
+  const url = `${WB_BASE}/${indicator}?format=json&per_page=20000&mrv=20`;
   try {
     const res = await fetch(url, { next: { revalidate: 0 } });
     if (!res.ok) return {};

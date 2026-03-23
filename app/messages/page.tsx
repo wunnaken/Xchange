@@ -406,7 +406,14 @@ function MessagesContent() {
           setTypingUsers((prev) => prev.filter((n) => n !== (incoming as { author_name?: string }).author_name));
           setMessages((prev) => {
             if (prev.some((m) => m.id === incoming.id)) return prev;
-            return [...prev, { ...incoming, is_mine: false, author: null, reactions: [] }];
+            // Enrich reply_to from existing messages in state
+            const replyTo = incoming.reply_to_id
+              ? prev.find((m) => m.id === incoming.reply_to_id) ?? null
+              : null;
+            const reply_to = replyTo
+              ? { content: replyTo.content, author_name: replyTo.author?.name ?? "Trader" }
+              : null;
+            return [...prev, { ...incoming, is_mine: false, author: null, reactions: [], reply_to }];
           });
         }
       )

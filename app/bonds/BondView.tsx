@@ -342,7 +342,7 @@ export default function BondView() {
                 contentStyle={{ background: "#0F1520", border: "1px solid rgba(255,255,255,0.1)" }}
                 labelStyle={{ color: "#cbd5e1" }}
                 labelFormatter={(maturity) => `Maturity: ${String(maturity)}`}
-                formatter={(v: number | null) => (v == null ? "—" : `${Number(v).toFixed(3)}%`)}
+                formatter={(v) => (v == null ? "—" : `${Number(v).toFixed(3)}%`)}
               />
               <Line
                 type="monotone"

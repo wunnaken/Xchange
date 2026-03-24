@@ -73,6 +73,10 @@ export default function WatchlistPage() {
   const [notificationsGranted, setNotificationsGranted] = useState(false);
   const [syncIssue, setSyncIssue] = useState(false);
   const [alertsSyncIssue, setAlertsSyncIssue] = useState(false);
+  const [shareModal, setShareModal] = useState<{ ticker: string } | null>(null);
+  const [shareConvs, setShareConvs] = useState<{ id: string; label: string }[]>([]);
+  const [shareLoading, setShareLoading] = useState(false);
+  const [shareSending, setShareSending] = useState(false);
 
   useEffect(() => {
     toastRef.current = showToast;
@@ -289,6 +293,39 @@ export default function WatchlistPage() {
     }
   };
 
+  const openShareModal = async (ticker: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setShareModal({ ticker });
+    setShareLoading(true);
+    try {
+      const res = await fetch("/api/conversations");
+      const data = await res.json() as { dms: { id: string; other_user?: { name: string; username: string } | null }[]; groups: { id: string; name: string | null }[]; community: { id: string; name: string | null }[] };
+      const convs: { id: string; label: string }[] = [
+        ...data.dms.map((c) => ({ id: c.id, label: c.other_user?.name ?? c.other_user?.username ?? "DM" })),
+        ...data.groups.map((c) => ({ id: c.id, label: c.name ?? "Group" })),
+        ...data.community.map((c) => ({ id: c.id, label: c.name ?? "Community" })),
+      ];
+      setShareConvs(convs);
+    } catch { setShareConvs([]); }
+    setShareLoading(false);
+  };
+
+  const handleShareToConv = async (convId: string) => {
+    if (!shareModal || shareSending) return;
+    setShareSending(true);
+    try {
+      await fetch(`/api/conversations/${convId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: `__ticker:${shareModal.ticker}` }),
+      });
+      setShareModal(null);
+      showToast(`${shareModal.ticker} shared to chat`, "success");
+    } catch { /* ignore */ }
+    setShareSending(false);
+  };
+
   const openAlertModal = (prefillTicker?: string, alert?: PriceAlert | null) => {
     setModalPrefillTicker(prefillTicker);
     setEditingAlert(alert ?? null);
@@ -502,6 +539,15 @@ export default function WatchlistPage() {
                         </button>
                         <button
                           type="button"
+                          onClick={(e) => void openShareModal(item.ticker, e)}
+                          className="rounded px-2.5 py-1.5 text-xs font-medium text-zinc-400 transition-colors hover:bg-[var(--accent-color)]/10 hover:text-[var(--accent-color)]"
+                          aria-label={`Share ${item.ticker} to chat`}
+                          title="Share to chat"
+                        >
+                          Share
+                        </button>
+                        <button
+                          type="button"
                           onClick={(e) => handleRemove(item.ticker, e)}
                           className="rounded px-2.5 py-1.5 text-xs font-medium text-zinc-400 transition-colors hover:bg-red-500/10 hover:text-red-400"
                           aria-label={`Remove ${item.ticker} from watchlist`}
@@ -693,6 +739,40 @@ export default function WatchlistPage() {
           void refreshAlerts();
         }}
       />
+
+      {/* Share to chat modal */}
+      {shareModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setShareModal(null)}>
+          <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-[#0A0F1A] p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-zinc-100">Share <span className="text-[var(--accent-color)]">{shareModal.ticker}</span> to chat</h3>
+              <button type="button" onClick={() => setShareModal(null)} className="text-zinc-600 hover:text-zinc-300">✕</button>
+            </div>
+            {shareLoading ? (
+              <div className="flex items-center justify-center py-6">
+                <span className="h-5 w-5 animate-spin rounded-full border-2 border-white/20 border-t-[var(--accent-color)]" />
+              </div>
+            ) : shareConvs.length === 0 ? (
+              <p className="py-4 text-center text-sm text-zinc-500">No conversations yet.</p>
+            ) : (
+              <ul className="max-h-64 space-y-1 overflow-y-auto">
+                {shareConvs.map((c) => (
+                  <li key={c.id}>
+                    <button
+                      type="button"
+                      disabled={shareSending}
+                      onClick={() => void handleShareToConv(c.id)}
+                      className="w-full rounded-xl px-4 py-2.5 text-left text-sm text-zinc-300 transition-colors hover:bg-white/5 disabled:opacity-50"
+                    >
+                      {c.label}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

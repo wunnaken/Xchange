@@ -34,6 +34,7 @@ const MAIN_NAV: { href: string; label: string; icon?: "radar" }[] = [
   { href: "/journal", label: "Journal" },
   { href: "/predict", label: "PredictNow" },
   { href: "/datahub", label: "DataHub" },
+  { href: "/insider-trades", label: "InsiderTrades" },
   { href: "/watchlist", label: "My Watchlist" },
   { href: "/workspace", label: "Workspace" },
 ];

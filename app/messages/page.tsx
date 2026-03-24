@@ -44,6 +44,51 @@ type SearchProfile = { user_id: string; name: string; username: string; is_verif
 
 type ActiveTab = "community" | "direct";
 
+// ─── Ticker Card ────────────────────────────────────────────────────────────
+
+const TICKER_PREFIX = "__ticker:";
+
+function TickerCardMsg({ symbol }: { symbol: string }) {
+  const [quote, setQuote] = useState<{ price: number | null; changePercent: number | null } | null>(null);
+  useEffect(() => {
+    fetch(`/api/ticker-quote?ticker=${encodeURIComponent(symbol)}`)
+      .then((r) => r.json())
+      .then((d: { price: number | null; changePercent: number | null }) => setQuote(d))
+      .catch(() => {});
+  }, [symbol]);
+
+  const up = (quote?.changePercent ?? 0) >= 0;
+  const pct = quote?.changePercent != null ? `${up ? "+" : ""}${quote.changePercent.toFixed(2)}%` : null;
+  const price = quote?.price != null
+    ? quote.price >= 1 ? `$${quote.price.toFixed(2)}` : `$${quote.price.toFixed(4)}`
+    : null;
+
+  return (
+    <Link
+      href={`/search/${encodeURIComponent(symbol)}`}
+      className="flex items-center gap-3 rounded-2xl border border-white/10 bg-[#0F1520] px-4 py-3 text-zinc-200 transition-opacity hover:opacity-90"
+    >
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/10 text-xs font-bold">
+        {symbol.slice(0, 3)}
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-semibold">{symbol}</p>
+        <p className="text-[10px] text-zinc-500">View chart →</p>
+      </div>
+      {price != null ? (
+        <div className="shrink-0 text-right">
+          <p className="text-sm font-medium">{price}</p>
+          {pct != null && (
+            <p className={`text-[10px] font-medium ${up ? "text-emerald-400" : "text-red-400"}`}>{pct}</p>
+          )}
+        </div>
+      ) : (
+        <div className="h-4 w-16 animate-pulse rounded bg-white/10" />
+      )}
+    </Link>
+  );
+}
+
 function FounderBadge({ size = 14 }: { size?: number }) {
   return (
     <span className="inline-flex items-center justify-center rounded-full bg-amber-500/20 text-amber-400" style={{ width: size, height: size }} title="Founder">
@@ -288,11 +333,14 @@ function MessagesContent() {
   const presenceChannelRef = useRef<ReturnType<ReturnType<typeof createClient>["channel"]> | null>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentUserIdRef = useRef<string | null>(null);
+  const myReactionKeys = useRef<Set<string>>(new Set());
   const [replyingTo, setReplyingTo] = useState<{ id: string; content: string; author_name: string } | null>(null);
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
   const [emojiPickerMsgId, setEmojiPickerMsgId] = useState<string | null>(null);
+  const [tickerPickerOpen, setTickerPickerOpen] = useState(false);
+  const [tickerInput, setTickerInput] = useState("");
 
   useEffect(() => { currentUserIdRef.current = user?.id ?? null; }, [user?.id]);
 
@@ -431,6 +479,34 @@ function MessagesContent() {
           );
         }
       )
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "message_reactions" },
+        (payload) => {
+          const { message_id, user_id, emoji } = payload.new as { message_id: string; user_id: string; emoji: string };
+          if (user_id === currentUserIdRef.current) return; // own reaction already handled optimistically
+          setMessages((prev) => prev.map((m) => {
+            if (m.id !== message_id) return m;
+            const reactions = m.reactions ?? [];
+            const existing = reactions.find((r) => r.emoji === emoji);
+            if (existing) return { ...m, reactions: reactions.map((r) => r.emoji === emoji ? { ...r, count: r.count + 1 } : r) };
+            return { ...m, reactions: [...reactions, { emoji, count: 1, by_me: false }] };
+          }));
+        }
+      )
+      .on("broadcast", { event: "reaction-remove" }, (payload: { payload?: { msgId?: string; emoji?: string; bkey?: string } }) => {
+        const { msgId, emoji, bkey } = payload.payload ?? {};
+        if (!msgId || !emoji) return;
+        if (bkey && myReactionKeys.current.has(bkey)) { myReactionKeys.current.delete(bkey); return; }
+        setMessages((prev) => prev.map((m) => {
+          if (m.id !== msgId) return m;
+          const reactions = m.reactions ?? [];
+          const existing = reactions.find((r) => r.emoji === emoji);
+          if (!existing) return m;
+          if (existing.count <= 1) return { ...m, reactions: reactions.filter((r) => r.emoji !== emoji) };
+          return { ...m, reactions: reactions.map((r) => r.emoji === emoji ? { ...r, count: r.count - 1 } : r) };
+        }));
+      })
       .on("broadcast", { event: "read" }, (payload: { payload?: { userId?: string; at?: string } }) => {
         const { userId: readerId, at } = payload.payload ?? {};
         if (readerId && readerId !== currentUserIdRef.current && at) {
@@ -469,6 +545,10 @@ function MessagesContent() {
     return () => clearInterval(interval);
   }, [selectedId]);
 
+  // Scroll to bottom when messages load or new messages arrive
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages.length, selectedId]);
 
   const sendMessage = async () => {
     const text = input.trim();
@@ -504,7 +584,7 @@ function MessagesContent() {
         setMessages((prev) => {
           // If realtime already added the real message, just remove the optimistic one
           if (prev.some((m) => m.id === message.id)) return prev.filter((m) => m.id !== tempId);
-          return prev.map((m) => m.id === tempId ? message : m);
+          return prev.map((m) => m.id === tempId ? { ...message, reply_to: message.reply_to ?? optimistic.reply_to ?? null } : m);
         });
         // Update preview in conversation list
         setConversations((prev) => {
@@ -519,6 +599,43 @@ function MessagesContent() {
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
     } finally {
       setSending(false);
+    }
+  };
+
+  const sendTickerCard = async (symbol: string) => {
+    const ticker = symbol.trim().toUpperCase();
+    if (!ticker || !selectedId) return;
+    setTickerPickerOpen(false);
+    setTickerInput("");
+    const content = `${TICKER_PREFIX}${ticker}`;
+    const tempId = `opt-${Date.now()}`;
+    const optimistic: Message = {
+      id: tempId,
+      user_id: "me",
+      content,
+      created_at: new Date().toISOString(),
+      is_mine: true,
+      author: null,
+      reactions: [],
+    };
+    setMessages((prev) => [...prev, optimistic]);
+    try {
+      const res = await fetch(`/api/conversations/${selectedId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      });
+      if (res.ok) {
+        const { message } = await res.json() as { message: Message };
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === message.id)) return prev.filter((m) => m.id !== tempId);
+          return prev.map((m) => m.id === tempId ? message : m);
+        });
+      } else {
+        setMessages((prev) => prev.filter((m) => m.id !== tempId));
+      }
+    } catch {
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
     }
   };
 
@@ -556,11 +673,21 @@ function MessagesContent() {
         return { ...m, reactions: next };
       })
     );
-    await fetch(`/api/conversations/${selectedId}/messages/${msgId}/reactions`, {
+    const res = await fetch(`/api/conversations/${selectedId}/messages/${msgId}/reactions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ emoji }),
     });
+    if (res.ok && channelRef.current) {
+      const { action } = await res.json() as { action: string };
+      if (action === "removed") {
+        const bkey = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        myReactionKeys.current.add(bkey);
+        setTimeout(() => myReactionKeys.current.delete(bkey), 10000);
+        void channelRef.current.send({ type: "broadcast", event: "reaction-remove", payload: { msgId, emoji, bkey } });
+      }
+      // "added" is handled by postgres_changes on message_reactions INSERT
+    }
   };
 
   const togglePin = async (msg: Message) => {
@@ -970,7 +1097,11 @@ Find a Community
                           {msg.reply_to && (
                             <div className={`mb-1 max-w-full rounded-lg border-l-2 border-[var(--accent-color)]/60 bg-white/5 px-3 py-1.5 ${msg.is_mine ? "items-end" : "items-start"}`}>
                               <p className="text-[10px] font-medium text-[var(--accent-color)]/80">{msg.reply_to.author_name}</p>
-                              <p className="truncate text-[11px] text-zinc-500">{msg.reply_to.content}</p>
+                              <p className="truncate text-[11px] text-zinc-500">
+                                {msg.reply_to.content.startsWith(TICKER_PREFIX)
+                                  ? `📈 ${msg.reply_to.content.slice(TICKER_PREFIX.length)}`
+                                  : msg.reply_to.content}
+                              </p>
                             </div>
                           )}
 
@@ -993,6 +1124,15 @@ Find a Community
                                 <button type="button" onClick={() => setEditingMsgId(null)} className="text-zinc-500 hover:underline">Cancel</button>
                                 <span className="text-zinc-600">· Esc to cancel</span>
                               </div>
+                            </div>
+                          ) : msg.content.startsWith(TICKER_PREFIX) ? (
+                            <div>
+                              <TickerCardMsg
+                                symbol={msg.content.slice(TICKER_PREFIX.length)}
+                              />
+                              <p className={`mt-1 px-1 text-[10px] ${msg.is_mine ? "text-[#020308]/60" : "text-zinc-600"}`}>
+                                {fmtTime(msg.created_at)}
+                              </p>
                             </div>
                           ) : (
                             <div className={`rounded-2xl px-4 py-2.5 ${
@@ -1062,12 +1202,54 @@ Find a Community
                   <div className="mb-2 flex items-center gap-2 rounded-lg border-l-2 border-[var(--accent-color)]/60 bg-white/5 px-3 py-1.5">
                     <div className="min-w-0 flex-1">
                       <p className="text-[10px] font-medium text-[var(--accent-color)]/80">Replying to {replyingTo.author_name}</p>
-                      <p className="truncate text-[11px] text-zinc-500">{replyingTo.content}</p>
+                      <p className="truncate text-[11px] text-zinc-500">
+                        {replyingTo.content.startsWith(TICKER_PREFIX)
+                          ? `📈 ${replyingTo.content.slice(TICKER_PREFIX.length)}`
+                          : replyingTo.content}
+                      </p>
                     </div>
                     <button type="button" onClick={() => setReplyingTo(null)} className="shrink-0 text-zinc-600 hover:text-zinc-300">✕</button>
                   </div>
                 )}
+                {/* Ticker picker */}
+                {tickerPickerOpen && (
+                  <div className="mb-2 flex items-center gap-2 rounded-xl border border-white/10 bg-[#0F1520] px-3 py-2">
+                    <svg className="h-4 w-4 shrink-0 text-[var(--accent-color)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" />
+                    </svg>
+                    <input
+                      autoFocus
+                      type="text"
+                      value={tickerInput}
+                      onChange={(e) => setTickerInput(e.target.value.toUpperCase())}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && tickerInput.trim()) { e.preventDefault(); void sendTickerCard(tickerInput); }
+                        if (e.key === "Escape") { setTickerPickerOpen(false); setTickerInput(""); }
+                      }}
+                      placeholder="Enter ticker symbol (e.g. AAPL, BTC)…"
+                      className="flex-1 bg-transparent text-sm text-zinc-100 placeholder:text-zinc-600 outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => { if (tickerInput.trim()) void sendTickerCard(tickerInput); }}
+                      disabled={!tickerInput.trim()}
+                      className="rounded-lg bg-[var(--accent-color)] px-3 py-1 text-xs font-medium text-[#020308] disabled:opacity-40"
+                    >Share</button>
+                    <button type="button" onClick={() => { setTickerPickerOpen(false); setTickerInput(""); }} className="text-zinc-600 hover:text-zinc-300">✕</button>
+                  </div>
+                )}
                 <div className="flex gap-2">
+                  {/* Ticker share button */}
+                  <button
+                    type="button"
+                    onClick={() => { setTickerPickerOpen((o) => !o); setTickerInput(""); }}
+                    className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-white/10 transition hover:border-[var(--accent-color)]/40 hover:text-[var(--accent-color)] ${tickerPickerOpen ? "border-[var(--accent-color)]/40 text-[var(--accent-color)]" : "text-zinc-400"}`}
+                    title="Share ticker card"
+                  >
+                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" />
+                    </svg>
+                  </button>
                   <input
                     type="text"
                     value={input}

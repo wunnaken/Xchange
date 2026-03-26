@@ -183,7 +183,9 @@ function getTerritoryDisplayName(poly: CountryPoly): string {
   const coords: number[][][] =
     g.type === "Polygon"
       ? (g.coordinates as number[][][])
-      : (g.coordinates as number[][][][])[0];
+      : g.type === "MultiPolygon"
+        ? ((g as { coordinates: number[][][][] }).coordinates)[0]
+        : [];
   const [cLat, cLng] = polygonCentroid(coords);
   for (const t of TERRITORY_OVERRIDES) {
     if (

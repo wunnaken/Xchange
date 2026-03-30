@@ -22,7 +22,25 @@
       "Bash(xargs grep:*)",
       "Bash(find G:/quantivtrade -type f \\\\\\(-name *.sql -o -name schema* -o -name migration* \\\\\\))",
       "Bash(find G:/quantivtrade -maxdepth 2 -type f \\\\\\(-name .env* -o -name README* -o -name SETUP* \\\\\\))",
-      "Bash(npx next:*)"
+      "Bash(npx next:*)",
+      "Bash(for f:*)",
+      "Bash(do echo:*)",
+      "Read(//workspaces/QuantivTrade/**)",
+      "Bash(done)",
+      "Bash(wc -l /workspaces/QuantivTrade/app/*/page.tsx)",
+      "Bash(grep -L \"dynamic\" /workspaces/QuantivTrade/app/*/page.tsx)",
+      "Bash(cp /workspaces/QuantivTrade/app/ceos/page.tsx /workspaces/QuantivTrade/app/ceos/CEOsView.tsx)",
+      "Bash(cp /workspaces/QuantivTrade/app/journal/page.tsx /workspaces/QuantivTrade/app/journal/JournalView.tsx)",
+      "Bash(cp /workspaces/QuantivTrade/app/messages/page.tsx /workspaces/QuantivTrade/app/messages/MessagesView.tsx)",
+      "Bash(cp /workspaces/QuantivTrade/app/profile/page.tsx /workspaces/QuantivTrade/app/profile/ProfileView.tsx)",
+      "Bash(cp /workspaces/QuantivTrade/app/feed/page.tsx /workspaces/QuantivTrade/app/feed/FeedView.tsx)",
+      "Bash(sed -i 's/export default function CEOsPage/export default function CEOsView/' /workspaces/QuantivTrade/app/ceos/CEOsView.tsx)",
+      "Bash(sed -i 's/export default function JournalPage/export default function JournalView/' /workspaces/QuantivTrade/app/journal/JournalView.tsx)",
+      "Bash(sed -i 's/export default function MessagesPage/export default function MessagesView/' /workspaces/QuantivTrade/app/messages/MessagesView.tsx)",
+      "Bash(sed -i 's/export default function ProfilePage/export default function ProfileView/' /workspaces/QuantivTrade/app/profile/ProfileView.tsx)",
+      "Bash(sed -i 's/export default function BentoDashboard\\\\b/export default function BentoDashboardView/' /workspaces/QuantivTrade/app/feed/FeedView.tsx)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ]
   }
 }

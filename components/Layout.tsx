@@ -419,7 +419,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                     </svg>
                   </button>
                 )}
-                {!isSectionCollapsed && sectionItems.map((item) => (
+                {!isSectionCollapsed && sectionItems.filter((item) => !narrow || item.icon).map((item) => (
                   <NavItem
                     key={item.href}
                     href={item.href}

@@ -389,7 +389,7 @@ function DeFiTab({ protocols, history }: { protocols: DefiProtocol[]; history: D
             <YAxis tick={{ fontSize: 9, fill: "#71717a" }} tickLine={false} axisLine={false} tickFormatter={(v) => `$${v.toFixed(0)}B`} />
             <Tooltip
               contentStyle={{ background: "#0a0b14", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, fontSize: 11 }}
-              formatter={(v: number) => [`$${v.toFixed(2)}B`, "TVL"]}
+              formatter={(v) => [`$${(v as number).toFixed(2)}B`, "TVL"]}
             />
             <Area type="monotone" dataKey="tvl" stroke="var(--accent-color)" fill="url(#defiGrad)" strokeWidth={1.5} dot={false} />
           </AreaChart>
@@ -487,7 +487,7 @@ function DominanceTab({
               />
               <Tooltip
                 contentStyle={{ background: "#0a0b14", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, fontSize: 11 }}
-                formatter={(v: number) => [`$${(v / 1e12).toFixed(3)}T`, "Market Cap"]}
+                formatter={(v) => [`$${((v as number) / 1e12).toFixed(3)}T`, "Market Cap"]}
               />
               <Area type="monotone" dataKey="value" stroke="var(--accent-color)" fill="url(#domGrad)" strokeWidth={1.5} dot={false} />
             </AreaChart>
@@ -510,7 +510,7 @@ function DominanceTab({
               </Pie>
               <Tooltip
                 contentStyle={{ background: "#0a0b14", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, fontSize: 11 }}
-                formatter={(v: number) => [`${v}%`, ""]}
+                formatter={(v) => [`${v}%`, ""]}
               />
             </PieChart>
           </ResponsiveContainer>
@@ -554,9 +554,10 @@ function DominanceTab({
             />
             <Tooltip
               contentStyle={{ background: "#0a0b14", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, fontSize: 11 }}
-              formatter={(v: number) => {
-                const abs = Math.abs(v);
-                const fmt = abs >= 1e9 ? `${v < 0 ? "-" : "+"}$${(abs / 1e9).toFixed(2)}B` : `${v < 0 ? "-" : "+"}$${(abs / 1e6).toFixed(0)}M`;
+              formatter={(v) => {
+                const n = v as number;
+                const abs = Math.abs(n);
+                const fmt = abs >= 1e9 ? `${n < 0 ? "-" : "+"}$${(abs / 1e9).toFixed(2)}B` : `${n < 0 ? "-" : "+"}$${(abs / 1e6).toFixed(0)}M`;
                 return [fmt, "24h Change"];
               }}
             />

@@ -59,7 +59,7 @@ export async function GET(req: Request) {
       noPrice: m.noPrice,
       total: m.yesPrice + m.noPrice,
       gap: Math.abs(100 - (m.yesPrice + m.noPrice)),
-      type: m.yesPrice + m.noPrice < 100 ? "under" : "over",
+      type: (m.yesPrice + m.noPrice < 100 ? "under" : "over") as "under" | "over",
       url: m.url,
     }))
     .sort((a, b) => b.gap - a.gap)

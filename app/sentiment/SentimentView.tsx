@@ -214,7 +214,7 @@ function MainRadarChart({ data, tfFilter }: { data: SentimentData; tfFilter: TFK
           <PolarRadiusAxis domain={[0, 100]} tickCount={4} tick={false} axisLine={false} />
           <Tooltip
             contentStyle={{ background: "#0a0e1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, fontSize: 11 }}
-            formatter={(v: number, name: string) => [`${v}`, name]}
+            formatter={(v, name) => [`${v}`, String(name)]}
           />
           {(showAll || tfFilter === "monthAgo") && (
             <Radar

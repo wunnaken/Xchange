@@ -824,9 +824,9 @@ function InvestorDetail({ investor }: { investor: FamousInvestor }) {
                     />
                     <Tooltip
                       contentStyle={{ background: "#0a0e1a", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, fontSize: 10 }}
-                      formatter={(v: number, _n: string, props: { payload?: { raw?: number | null } }) => {
-                        const raw = props.payload?.raw;
-                        return [`${v.toFixed(1)}% portfolio${raw != null ? ` · ${pct(raw, 2)} today` : ""}`, ""];
+                      formatter={(v, _n, props) => {
+                        const raw = (props as { payload?: { raw?: number | null } }).payload?.raw;
+                        return [`${(v as number).toFixed(1)}% portfolio${raw != null ? ` · ${pct(raw, 2)} today` : ""}`, ""];
                       }}
                     />
                   </RadarChart>
